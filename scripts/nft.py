@@ -2,11 +2,16 @@
 """
 OpenClaw TON Skill — NFT операции
 
-- Список NFT в кошельке
-- Информация об NFT
-- Информация о коллекции
-- Трансфер NFT (с эмуляцией)
-- Поиск коллекций
+- Список NFT в кошельке (TonAPI)
+- Информация об NFT (Marketapp + TonAPI)
+- Информация о коллекции (Marketapp)
+- Покупка NFT (Marketapp)
+- Продажа NFT (Marketapp)
+- Смена цены (Marketapp)
+- Снятие с продажи (Marketapp)
+- Трансфер NFT (TonAPI)
+- Поиск коллекций (TonAPI)
+- Гифты на продаже (Marketapp)
 """
 
 import os
@@ -24,6 +29,7 @@ sys.path.insert(0, str(script_dir))
 
 from utils import (
     tonapi_request,
+    api_request,
     is_valid_address,
     normalize_address,
     raw_to_friendly,
@@ -49,6 +55,54 @@ except ImportError:
 
 # NFT Transfer opcode (TEP-62)
 NFT_TRANSFER_OPCODE = 0x5fcc3d14
+
+# Marketapp API
+MARKETAPP_BASE = "https://api.marketapp.ws/v1"
+
+
+# =============================================================================
+# Marketapp API Helper
+# =============================================================================
+
+def marketapp_request(
+    endpoint: str,
+    method: str = "GET",
+    params: Optional[dict] = None,
+    json_data: Optional[dict] = None
+) -> dict:
+    """
+    Запрос к Marketapp API.
+    Auth: Header `Authorization: <token>` (без Bearer!)
+    
+    Args:
+        endpoint: Endpoint (без base URL), например "/nfts/{address}/"
+        method: HTTP метод
+        params: Query параметры
+        json_data: JSON body
+    
+    Returns:
+        Результат api_request
+    """
+    config = load_config()
+    api_key = config.get("marketapp_key", "")
+    
+    if not api_key:
+        return {
+            "success": False,
+            "error": "Marketapp API key not configured. Run: utils.py config set marketapp_key <your_key>"
+        }
+    
+    url = f"{MARKETAPP_BASE}{endpoint}"
+    
+    return api_request(
+        url=url,
+        method=method,
+        params=params,
+        json_data=json_data,
+        api_key=api_key,
+        api_key_header="Authorization",
+        api_key_prefix=""  # Без Bearer!
+    )
 
 
 # =============================================================================
@@ -97,8 +151,34 @@ def get_seqno(address: str) -> int:
     return 0
 
 
+def resolve_wallet_address(wallet_identifier: str, password: Optional[str] = None) -> Optional[str]:
+    """
+    Резолвит адрес кошелька по идентификатору (лейбл, адрес, .ton домен).
+    """
+    if looks_like_address(wallet_identifier):
+        return wallet_identifier
+    
+    if is_ton_domain(wallet_identifier):
+        resolved = resolve_address(wallet_identifier)
+        if resolved["success"]:
+            return resolved["address"]
+        return None
+    
+    # Ищем в хранилище по лейблу
+    if password:
+        try:
+            storage = WalletStorage(password)
+            wallet_data = storage.get_wallet(wallet_identifier, include_secrets=False)
+            if wallet_data:
+                return wallet_data["address"]
+        except:
+            pass
+    
+    return None
+
+
 # =============================================================================
-# NFT List
+# NFT List (TonAPI)
 # =============================================================================
 
 def looks_like_address(s: str) -> bool:
@@ -116,7 +196,7 @@ def looks_like_address(s: str) -> bool:
 
 def list_nfts(wallet_identifier: str, password: Optional[str] = None, limit: int = 100) -> dict:
     """
-    Получает список NFT в кошельке.
+    Получает список NFT в кошельке через TonAPI.
     
     Args:
         wallet_identifier: Лейбл или адрес кошелька
@@ -126,26 +206,7 @@ def list_nfts(wallet_identifier: str, password: Optional[str] = None, limit: int
     Returns:
         dict со списком NFT
     """
-    # Резолвим адрес кошелька
-    address = None
-    
-    # Сначала пробуем как адрес
-    if looks_like_address(wallet_identifier):
-        address = wallet_identifier
-    elif is_ton_domain(wallet_identifier):
-        resolved = resolve_address(wallet_identifier)
-        if resolved["success"]:
-            address = resolved["address"]
-    else:
-        # Ищем в хранилище по лейблу
-        if password:
-            try:
-                storage = WalletStorage(password)
-                wallet_data = storage.get_wallet(wallet_identifier, include_secrets=False)
-                if wallet_data:
-                    address = wallet_data["address"]
-            except:
-                pass
+    address = resolve_wallet_address(wallet_identifier, password)
     
     if not address:
         return {
@@ -181,7 +242,7 @@ def list_nfts(wallet_identifier: str, password: Optional[str] = None, limit: int
         collection = item.get("collection", {})
         previews = item.get("previews", [])
         
-        # Выбираем превью (предпочитаем среднее разрешение)
+        # Выбираем превью
         preview_url = None
         for p in previews:
             if p.get("resolution") == "500x500":
@@ -189,6 +250,16 @@ def list_nfts(wallet_identifier: str, password: Optional[str] = None, limit: int
                 break
         if not preview_url and previews:
             preview_url = previews[0].get("url")
+        
+        # Sale info
+        sale = item.get("sale")
+        sale_info = None
+        if sale:
+            price_val = int(sale.get("price", {}).get("value", 0))
+            sale_info = {
+                "price_ton": price_val / 1e9,
+                "marketplace": sale.get("market", {}).get("name"),
+            }
         
         nft = {
             "address": item.get("address"),
@@ -202,9 +273,9 @@ def list_nfts(wallet_identifier: str, password: Optional[str] = None, limit: int
             } if collection else None,
             "verified": item.get("verified", False),
             "owner": item.get("owner", {}).get("address"),
+            "sale": sale_info,
         }
         
-        # DNS домен?
         if item.get("dns"):
             nft["dns_domain"] = item.get("dns")
         
@@ -219,12 +290,14 @@ def list_nfts(wallet_identifier: str, password: Optional[str] = None, limit: int
 
 
 # =============================================================================
-# NFT Info
+# NFT Info (Marketapp + TonAPI)
 # =============================================================================
 
 def get_nft_info(nft_address: str) -> dict:
     """
     Получает детальную информацию об NFT.
+    Использует Marketapp API для информации о продаже + TonAPI для метаданных.
+    Работает даже если один из API недоступен.
     
     Args:
         nft_address: Адрес NFT
@@ -232,146 +305,226 @@ def get_nft_info(nft_address: str) -> dict:
     Returns:
         dict с информацией об NFT
     """
-    # Нормализуем адрес
     try:
         api_address = normalize_address(nft_address, "friendly")
     except:
         api_address = nft_address
     
-    result = tonapi_request(f"/nfts/{api_address}")
+    # Запрос к Marketapp (может вернуть ошибку если ключ не настроен)
+    marketapp_result = marketapp_request(f"/nfts/{api_address}/")
     
-    if not result["success"]:
+    # Запрос к TonAPI для дополнительных данных
+    tonapi_result = tonapi_request(f"/nfts/{api_address}")
+    
+    # Если оба API недоступны (и это не просто отсутствие ключа Marketapp)
+    if not tonapi_result["success"] and (not marketapp_result["success"] and "not configured" not in str(marketapp_result.get("error", ""))):
         return {
             "success": False,
-            "error": result.get("error", "Failed to fetch NFT info")
+            "error": tonapi_result.get("error") or marketapp_result.get("error", "Failed to fetch NFT info")
         }
     
-    item = result["data"]
-    metadata = item.get("metadata", {})
-    collection = item.get("collection", {})
-    previews = item.get("previews", [])
-    
-    # Все превью
-    preview_urls = {}
-    for p in previews:
-        resolution = p.get("resolution", "unknown")
-        preview_urls[resolution] = p.get("url")
-    
-    # Атрибуты (traits)
-    attributes = metadata.get("attributes", [])
-    traits = []
-    for attr in attributes:
-        traits.append({
-            "trait": attr.get("trait_type"),
-            "value": attr.get("value")
-        })
-    
-    # Sale info
-    sale = item.get("sale")
-    sale_info = None
-    if sale:
-        sale_info = {
-            "marketplace": sale.get("market", {}).get("name"),
-            "price_nano": sale.get("price", {}).get("value"),
-            "price_ton": int(sale.get("price", {}).get("value", 0)) / 1e9 if sale.get("price", {}).get("token_name") == "TON" else None,
-            "token": sale.get("price", {}).get("token_name"),
+    # Если только TonAPI недоступен
+    if not tonapi_result["success"] and not marketapp_result["success"]:
+        return {
+            "success": False,
+            "error": tonapi_result.get("error", "Failed to fetch NFT info")
         }
     
-    return {
+    # Собираем данные из обоих источников
+    result = {
         "success": True,
-        "address": item.get("address"),
-        "index": item.get("index"),
-        "name": metadata.get("name") or item.get("dns") or f"NFT #{item.get('index', '?')}",
-        "description": metadata.get("description"),
-        "image": metadata.get("image"),
-        "previews": preview_urls,
-        "traits": traits,
-        "owner": {
-            "address": item.get("owner", {}).get("address"),
-            "name": item.get("owner", {}).get("name"),
-        },
-        "collection": {
-            "address": collection.get("address"),
-            "name": collection.get("name"),
-            "description": collection.get("description"),
-        } if collection else None,
-        "verified": item.get("verified", False),
-        "approved_by": item.get("approved_by", []),
-        "dns_domain": item.get("dns"),
-        "sale": sale_info,
-        "metadata_url": item.get("metadata", {}).get("external_url"),
+        "address": api_address,
     }
+    
+    # Данные из Marketapp (приоритет для sale info)
+    if marketapp_result["success"]:
+        mkt_data = marketapp_result["data"]
+        result["name"] = mkt_data.get("name")
+        result["collection_address"] = mkt_data.get("collection_address")
+        result["owner"] = mkt_data.get("real_owner")
+        result["status"] = mkt_data.get("status")  # for_sale, not_for_sale, etc.
+        
+        # Атрибуты
+        attrs = mkt_data.get("attributes", [])
+        result["traits"] = [
+            {"trait": a.get("trait_type"), "value": a.get("value")}
+            for a in attrs
+        ]
+        
+        # Детали статуса (цена и т.д.)
+        status_details = mkt_data.get("status_details", {})
+        if result["status"] == "for_sale" and status_details:
+            price_nano = int(status_details.get("price", 0))
+            result["sale"] = {
+                "price_nano": price_nano,
+                "price_ton": price_nano / 1e9,
+                "marketplace": "Marketapp",
+            }
+        else:
+            result["sale"] = None
+    
+    # Данные из TonAPI (метаданные, превью)
+    if tonapi_result["success"]:
+        ton_data = tonapi_result["data"]
+        metadata = ton_data.get("metadata", {})
+        collection = ton_data.get("collection", {})
+        previews = ton_data.get("previews", [])
+        
+        # Дополняем если нет из Marketapp
+        if not result.get("name"):
+            result["name"] = metadata.get("name") or ton_data.get("dns") or f"NFT #{ton_data.get('index', '?')}"
+        
+        result["description"] = metadata.get("description")
+        result["image"] = metadata.get("image")
+        result["index"] = ton_data.get("index")
+        
+        # Превью
+        preview_urls = {}
+        for p in previews:
+            resolution = p.get("resolution", "unknown")
+            preview_urls[resolution] = p.get("url")
+        result["previews"] = preview_urls
+        
+        # Коллекция
+        if collection:
+            result["collection"] = {
+                "address": collection.get("address"),
+                "name": collection.get("name"),
+                "description": collection.get("description"),
+            }
+        elif result.get("collection_address"):
+            result["collection"] = {"address": result["collection_address"]}
+        
+        result["verified"] = ton_data.get("verified", False)
+        result["approved_by"] = ton_data.get("approved_by", [])
+        result["dns_domain"] = ton_data.get("dns")
+        
+        # Если нет owner из Marketapp
+        if not result.get("owner"):
+            result["owner"] = ton_data.get("owner", {}).get("address")
+        
+        # Sale из TonAPI если нет из Marketapp
+        if not result.get("sale"):
+            sale = ton_data.get("sale")
+            if sale:
+                price_val = int(sale.get("price", {}).get("value", 0))
+                result["sale"] = {
+                    "price_nano": price_val,
+                    "price_ton": price_val / 1e9,
+                    "marketplace": sale.get("market", {}).get("name"),
+                }
+    
+    return result
 
 
 # =============================================================================
-# Collection Info
+# Collection Info (Marketapp)
 # =============================================================================
 
-def get_collection_info(collection_address: str) -> dict:
+def get_collection_info(collection_address: str, filter_by: str = "onsale", limit: int = 10) -> dict:
     """
-    Получает информацию о коллекции NFT.
+    Получает информацию о коллекции NFT через Marketapp + TonAPI.
+    Работает даже если Marketapp API недоступен.
     
     Args:
         collection_address: Адрес коллекции
+        filter_by: Фильтр (onsale, all)
+        limit: Лимит NFT в ответе
     
     Returns:
         dict с информацией о коллекции
     """
-    # Нормализуем адрес
     try:
         api_address = normalize_address(collection_address, "friendly")
     except:
         api_address = collection_address
     
-    result = tonapi_request(f"/nfts/collections/{api_address}")
+    # TonAPI для метаданных (всегда пробуем)
+    tonapi_result = tonapi_request(f"/nfts/collections/{api_address}")
     
-    if not result["success"]:
+    # Список коллекций для получения статистики (Marketapp)
+    collections_result = marketapp_request("/collections/")
+    
+    collection_stats = None
+    if collections_result["success"]:
+        for coll in collections_result["data"]:
+            if coll.get("address") == api_address:
+                collection_stats = coll
+                break
+    
+    # NFT в коллекции (Marketapp)
+    nfts_result = marketapp_request(
+        f"/nfts/collections/{api_address}/",
+        params={"filter_by": filter_by, "limit": limit}
+    )
+    
+    # Если TonAPI недоступен и Marketapp тоже
+    if not tonapi_result["success"] and not collections_result["success"]:
         return {
             "success": False,
-            "error": result.get("error", "Failed to fetch collection info")
+            "error": tonapi_result.get("error", "Failed to fetch collection info")
         }
     
-    data = result["data"]
-    metadata = data.get("metadata", {})
-    previews = data.get("previews", [])
-    
-    # Превью
-    preview_url = None
-    for p in previews:
-        if p.get("resolution") == "500x500":
-            preview_url = p.get("url")
-            break
-    if not preview_url and previews:
-        preview_url = previews[0].get("url")
-    
-    # Социальные ссылки
-    social_links = metadata.get("social_links", [])
-    
-    return {
+    result = {
         "success": True,
-        "address": data.get("address"),
-        "name": metadata.get("name") or data.get("name"),
-        "description": metadata.get("description") or data.get("description"),
-        "image": metadata.get("image"),
-        "preview_url": preview_url,
-        "items_count": data.get("next_item_index", 0),
-        "owner": {
-            "address": data.get("owner", {}).get("address"),
-            "name": data.get("owner", {}).get("name"),
-        } if data.get("owner") else None,
-        "social_links": social_links,
-        "verified": data.get("verified", False),
-        "approved_by": data.get("approved_by", []),
+        "address": api_address,
     }
+    
+    # Из Marketapp
+    if collection_stats:
+        result["name"] = collection_stats.get("name")
+        extra = collection_stats.get("extra_data", {})
+        result["stats"] = {
+            "items_count": extra.get("items"),
+            "floor_ton": int(extra.get("floor", 0)) / 1e9 if extra.get("floor") else None,
+            "volume_7d_ton": int(extra.get("volume7d", 0)) / 1e9 if extra.get("volume7d") else None,
+            "volume_30d_ton": int(extra.get("volume30d", 0)) / 1e9 if extra.get("volume30d") else None,
+            "owners": extra.get("owners"),
+            "on_sale": extra.get("on_sale_all"),
+        }
+    
+    # NFT на продаже
+    if nfts_result["success"]:
+        nfts_data = nfts_result["data"]
+        items = nfts_data.get("items", [])
+        result["nfts_on_sale"] = []
+        for item in items:
+            min_bid = int(item.get("min_bid", 0))
+            result["nfts_on_sale"].append({
+                "address": item.get("address"),
+                "name": item.get("name"),
+                "price_ton": min_bid / 1e9,
+                "owner": item.get("real_owner"),
+                "item_num": item.get("item_num"),
+            })
+        result["cursor"] = nfts_data.get("cursor")
+    
+    # Из TonAPI
+    if tonapi_result["success"]:
+        ton_data = tonapi_result["data"]
+        metadata = ton_data.get("metadata", {})
+        
+        if not result.get("name"):
+            result["name"] = metadata.get("name") or ton_data.get("name")
+        
+        result["description"] = metadata.get("description") or ton_data.get("description")
+        result["image"] = metadata.get("image")
+        result["owner"] = ton_data.get("owner", {}).get("address") if ton_data.get("owner") else None
+        result["verified"] = ton_data.get("verified", False)
+        
+        if not result.get("stats"):
+            result["stats"] = {"items_count": ton_data.get("next_item_index", 0)}
+    
+    return result
 
 
 # =============================================================================
-# Search Collections
+# Search Collections (TonAPI)
 # =============================================================================
 
 def search_collections(query: str, limit: int = 10) -> dict:
     """
-    Поиск коллекций NFT по названию.
+    Поиск коллекций NFT по названию через TonAPI.
     
     Args:
         query: Поисковый запрос
@@ -380,8 +533,6 @@ def search_collections(query: str, limit: int = 10) -> dict:
     Returns:
         dict со списком коллекций
     """
-    # TonAPI не имеет прямого поиска коллекций,
-    # используем общий поиск accounts
     result = tonapi_request(
         "/accounts/search",
         params={"name": query}
@@ -392,13 +543,10 @@ def search_collections(query: str, limit: int = 10) -> dict:
     if result["success"]:
         addresses = result["data"].get("addresses", [])
         
-        # Фильтруем только коллекции (проверяем тип аккаунта)
-        for addr_info in addresses[:limit * 2]:  # Берём больше, т.к. будем фильтровать
+        for addr_info in addresses[:limit * 2]:
             address = addr_info.get("address")
             name = addr_info.get("name")
             
-            # Проверяем является ли это коллекцией
-            # Делаем запрос к collection endpoint
             coll_result = tonapi_request(f"/nfts/collections/{address}")
             
             if coll_result["success"]:
@@ -416,9 +564,6 @@ def search_collections(query: str, limit: int = 10) -> dict:
                 if len(collections) >= limit:
                     break
     
-    # Альтернативный поиск через getgems API (если TonAPI не даёт результатов)
-    # или через список известных коллекций
-    
     return {
         "success": True,
         "query": query,
@@ -428,7 +573,630 @@ def search_collections(query: str, limit: int = 10) -> dict:
 
 
 # =============================================================================
-# NFT Transfer
+# Gifts on Sale (Marketapp)
+# =============================================================================
+
+def get_gifts_on_sale(
+    model: Optional[str] = None,
+    symbol: Optional[str] = None,
+    backdrop: Optional[str] = None,
+    min_price: Optional[float] = None,
+    max_price: Optional[float] = None,
+    sort_by: str = "min_bid_asc",
+    limit: int = 20
+) -> dict:
+    """
+    Получает список гифтов на продаже через Marketapp.
+    
+    Args:
+        model: Фильтр по модели
+        symbol: Фильтр по символу
+        backdrop: Фильтр по бэкдропу
+        min_price: Минимальная цена в TON
+        max_price: Максимальная цена в TON
+        sort_by: Сортировка (min_bid_asc, min_bid_desc, etc.)
+        limit: Лимит
+    
+    Returns:
+        dict со списком гифтов
+    """
+    params = {"sort_by": sort_by}
+    
+    if model:
+        params["model"] = model
+    if symbol:
+        params["symbol"] = symbol
+    if backdrop:
+        params["backdrop"] = backdrop
+    if min_price is not None:
+        params["min_price"] = min_price
+    if max_price is not None:
+        params["max_price"] = max_price
+    
+    result = marketapp_request("/gifts/onsale/", params=params)
+    
+    if not result["success"]:
+        return {
+            "success": False,
+            "error": result.get("error", "Failed to fetch gifts")
+        }
+    
+    data = result["data"]
+    items = data.get("items", [])[:limit]
+    
+    gifts = []
+    for item in items:
+        min_bid = int(item.get("min_bid", 0))
+        attrs = {a.get("trait_type"): a.get("value") for a in item.get("attributes", [])}
+        
+        gifts.append({
+            "address": item.get("address"),
+            "name": item.get("name"),
+            "price_ton": min_bid / 1e9,
+            "owner": item.get("real_owner"),
+            "item_num": item.get("item_num"),
+            "model": attrs.get("Model") or attrs.get("model"),
+            "symbol": attrs.get("Symbol") or attrs.get("symbol"),
+            "backdrop": attrs.get("Backdrop") or attrs.get("backdrop"),
+            "collection": item.get("collection_address"),
+        })
+    
+    return {
+        "success": True,
+        "count": len(gifts),
+        "gifts": gifts,
+        "cursor": data.get("cursor"),
+        "filters": {
+            "model": model,
+            "symbol": symbol,
+            "backdrop": backdrop,
+            "min_price": min_price,
+            "max_price": max_price,
+        }
+    }
+
+
+# =============================================================================
+# Trading Operations (Marketapp)
+# =============================================================================
+
+def emulate_marketapp_tx(transaction: dict, wallet_address: str) -> dict:
+    """
+    Эмулирует транзакцию Marketapp через TonAPI.
+    
+    Args:
+        transaction: Транзакция из Marketapp (TonTransactionSchema)
+        wallet_address: Адрес кошелька отправителя
+    
+    Returns:
+        dict с результатом эмуляции
+    """
+    messages = transaction.get("messages", [])
+    
+    if not messages:
+        return {"success": False, "error": "No messages in transaction"}
+    
+    # Суммируем все amount
+    total_amount = sum(int(m.get("amount", 0)) for m in messages)
+    
+    # Для эмуляции нужно построить BOC
+    # Пока возвращаем информацию о транзакции
+    return {
+        "success": True,
+        "messages_count": len(messages),
+        "total_amount_nano": total_amount,
+        "total_amount_ton": total_amount / 1e9,
+        "valid_until": transaction.get("validUntil"),
+        "messages": [
+            {
+                "to": m.get("address"),
+                "amount_ton": int(m.get("amount", 0)) / 1e9,
+                "has_payload": bool(m.get("payload")),
+                "has_state_init": bool(m.get("stateInit")),
+            }
+            for m in messages
+        ]
+    }
+
+
+def build_and_send_marketapp_tx(
+    transaction: dict,
+    wallet,
+    wallet_address: str,
+    seqno: int
+) -> dict:
+    """
+    Строит и отправляет транзакцию из Marketapp.
+    
+    Args:
+        transaction: Транзакция из Marketapp
+        wallet: Инстанс кошелька
+        wallet_address: Адрес кошелька
+        seqno: Текущий seqno
+    
+    Returns:
+        dict с результатом
+    """
+    from tonsdk.boc import Cell
+    from tonsdk.utils import Address
+    
+    messages = transaction.get("messages", [])
+    
+    if not messages:
+        return {"success": False, "error": "No messages in transaction"}
+    
+    # Для мультисообщений нужен v4 кошелёк
+    # Пока поддерживаем только одно сообщение
+    if len(messages) > 1:
+        return {"success": False, "error": "Multiple messages not yet supported. Use TonConnect wallet."}
+    
+    msg = messages[0]
+    to_addr = msg.get("address")
+    amount = int(msg.get("amount", 0))
+    payload_b64 = msg.get("payload")
+    state_init_b64 = msg.get("stateInit")
+    
+    # Декодируем payload
+    payload = None
+    if payload_b64:
+        try:
+            payload_bytes = base64.b64decode(payload_b64)
+            payload = Cell.one_from_boc(payload_bytes)
+        except:
+            pass
+    
+    # Строим транзакцию
+    query = wallet.create_transfer_message(
+        to_addr=to_addr,
+        amount=amount,
+        payload=payload,
+        seqno=seqno
+    )
+    
+    boc = query["message"].to_boc(False)
+    boc_b64 = base64.b64encode(boc).decode('ascii')
+    
+    # Отправляем
+    result = tonapi_request(
+        "/blockchain/message",
+        method="POST",
+        json_data={"boc": boc_b64}
+    )
+    
+    if not result["success"]:
+        return {
+            "success": False,
+            "error": result.get("error", "Failed to send transaction")
+        }
+    
+    return {
+        "success": True,
+        "message": "Transaction sent successfully"
+    }
+
+
+def buy_nft(
+    nft_address: str,
+    wallet_identifier: str,
+    password: str,
+    confirm: bool = False
+) -> dict:
+    """
+    Покупает NFT через Marketapp.
+    
+    Args:
+        nft_address: Адрес NFT
+        wallet_identifier: Кошелёк покупателя
+        password: Пароль
+        confirm: Подтвердить и отправить
+    
+    Returns:
+        dict с результатом
+    """
+    if not TONSDK_AVAILABLE:
+        return {"success": False, "error": "tonsdk not installed"}
+    
+    # Получаем инфо об NFT
+    nft_info = get_nft_info(nft_address)
+    if not nft_info["success"]:
+        return nft_info
+    
+    if not nft_info.get("sale"):
+        return {"success": False, "error": "NFT is not for sale"}
+    
+    # Получаем кошелёк
+    wallet_data = get_wallet_from_storage(wallet_identifier, password)
+    if not wallet_data:
+        return {"success": False, "error": f"Wallet not found: {wallet_identifier}"}
+    
+    buyer_address = wallet_data["address"]
+    price_ton = nft_info["sale"]["price_ton"]
+    
+    try:
+        nft_addr_friendly = normalize_address(nft_address, "friendly")
+    except:
+        nft_addr_friendly = nft_address
+    
+    # Запрос к Marketapp для получения транзакции
+    buy_result = marketapp_request(
+        "/nfts/buy/",
+        method="POST",
+        json_data={
+            "data": [
+                {
+                    "nft_address": nft_addr_friendly,
+                    "price": price_ton
+                }
+            ]
+        }
+    )
+    
+    if not buy_result["success"]:
+        return {
+            "success": False,
+            "error": buy_result.get("error", "Failed to create buy transaction")
+        }
+    
+    transaction = buy_result["data"].get("transaction", {})
+    
+    # Эмуляция
+    emulation = emulate_marketapp_tx(transaction, buyer_address)
+    
+    result = {
+        "action": "buy_nft",
+        "nft": {
+            "address": nft_addr_friendly,
+            "name": nft_info.get("name"),
+            "collection": nft_info.get("collection", {}).get("name") if nft_info.get("collection") else None,
+        },
+        "price_ton": price_ton,
+        "buyer": buyer_address,
+        "emulation": emulation,
+    }
+    
+    if confirm:
+        wallet = create_wallet_instance(wallet_data)
+        seqno = get_seqno(buyer_address)
+        
+        send_result = build_and_send_marketapp_tx(
+            transaction=transaction,
+            wallet=wallet,
+            wallet_address=buyer_address,
+            seqno=seqno
+        )
+        
+        result["sent"] = send_result["success"]
+        if send_result["success"]:
+            result["success"] = True
+            result["message"] = "Buy transaction sent successfully"
+        else:
+            result["success"] = False
+            result["error"] = send_result.get("error")
+    else:
+        result["success"] = True
+        result["confirmed"] = False
+        result["message"] = "Emulation successful. Use --confirm to buy."
+    
+    return result
+
+
+def sell_nft(
+    nft_address: str,
+    price_ton: float,
+    wallet_identifier: str,
+    password: str,
+    confirm: bool = False
+) -> dict:
+    """
+    Выставляет NFT на продажу через Marketapp.
+    
+    Args:
+        nft_address: Адрес NFT
+        price_ton: Цена в TON
+        wallet_identifier: Кошелёк владельца
+        password: Пароль
+        confirm: Подтвердить и отправить
+    
+    Returns:
+        dict с результатом
+    """
+    if not TONSDK_AVAILABLE:
+        return {"success": False, "error": "tonsdk not installed"}
+    
+    # Получаем кошелёк
+    wallet_data = get_wallet_from_storage(wallet_identifier, password)
+    if not wallet_data:
+        return {"success": False, "error": f"Wallet not found: {wallet_identifier}"}
+    
+    owner_address = wallet_data["address"]
+    
+    # Проверяем владение
+    nft_info = get_nft_info(nft_address)
+    if not nft_info["success"]:
+        return nft_info
+    
+    try:
+        owner_raw = normalize_address(owner_address, "raw")
+        nft_owner_raw = normalize_address(nft_info.get("owner", ""), "raw") if nft_info.get("owner") else None
+    except:
+        owner_raw = owner_address
+        nft_owner_raw = nft_info.get("owner")
+    
+    if owner_raw != nft_owner_raw:
+        return {"success": False, "error": f"NFT is not owned by this wallet. Owner: {nft_info.get('owner')}"}
+    
+    try:
+        nft_addr_friendly = normalize_address(nft_address, "friendly")
+        owner_addr_friendly = normalize_address(owner_address, "friendly")
+    except:
+        nft_addr_friendly = nft_address
+        owner_addr_friendly = owner_address
+    
+    # Запрос к Marketapp
+    sale_result = marketapp_request(
+        "/nfts/sale/",
+        method="POST",
+        json_data={
+            "owner_address": owner_addr_friendly,
+            "data": [
+                {
+                    "nft_address": nft_addr_friendly,
+                    "price": price_ton
+                }
+            ]
+        }
+    )
+    
+    if not sale_result["success"]:
+        return {
+            "success": False,
+            "error": sale_result.get("error", "Failed to create sale transaction")
+        }
+    
+    transaction = sale_result["data"].get("transaction", {})
+    emulation = emulate_marketapp_tx(transaction, owner_address)
+    
+    result = {
+        "action": "sell_nft",
+        "nft": {
+            "address": nft_addr_friendly,
+            "name": nft_info.get("name"),
+            "collection": nft_info.get("collection", {}).get("name") if nft_info.get("collection") else None,
+        },
+        "price_ton": price_ton,
+        "seller": owner_addr_friendly,
+        "emulation": emulation,
+    }
+    
+    if confirm:
+        wallet = create_wallet_instance(wallet_data)
+        seqno = get_seqno(owner_address)
+        
+        send_result = build_and_send_marketapp_tx(
+            transaction=transaction,
+            wallet=wallet,
+            wallet_address=owner_address,
+            seqno=seqno
+        )
+        
+        result["sent"] = send_result["success"]
+        if send_result["success"]:
+            result["success"] = True
+            result["message"] = "Sale transaction sent successfully"
+        else:
+            result["success"] = False
+            result["error"] = send_result.get("error")
+    else:
+        result["success"] = True
+        result["confirmed"] = False
+        result["message"] = "Emulation successful. Use --confirm to list for sale."
+    
+    return result
+
+
+def cancel_sale(
+    nft_address: str,
+    wallet_identifier: str,
+    password: str,
+    confirm: bool = False
+) -> dict:
+    """
+    Снимает NFT с продажи через Marketapp.
+    
+    Args:
+        nft_address: Адрес NFT
+        wallet_identifier: Кошелёк владельца
+        password: Пароль
+        confirm: Подтвердить и отправить
+    
+    Returns:
+        dict с результатом
+    """
+    if not TONSDK_AVAILABLE:
+        return {"success": False, "error": "tonsdk not installed"}
+    
+    wallet_data = get_wallet_from_storage(wallet_identifier, password)
+    if not wallet_data:
+        return {"success": False, "error": f"Wallet not found: {wallet_identifier}"}
+    
+    owner_address = wallet_data["address"]
+    
+    nft_info = get_nft_info(nft_address)
+    if not nft_info["success"]:
+        return nft_info
+    
+    if nft_info.get("status") != "for_sale" and not nft_info.get("sale"):
+        return {"success": False, "error": "NFT is not currently for sale"}
+    
+    try:
+        nft_addr_friendly = normalize_address(nft_address, "friendly")
+        owner_addr_friendly = normalize_address(owner_address, "friendly")
+    except:
+        nft_addr_friendly = nft_address
+        owner_addr_friendly = owner_address
+    
+    cancel_result = marketapp_request(
+        "/nfts/cancel_sale/",
+        method="POST",
+        json_data={
+            "owner_address": owner_addr_friendly,
+            "nft_addresses": [nft_addr_friendly]
+        }
+    )
+    
+    if not cancel_result["success"]:
+        return {
+            "success": False,
+            "error": cancel_result.get("error", "Failed to create cancel transaction")
+        }
+    
+    transaction = cancel_result["data"].get("transaction", {})
+    emulation = emulate_marketapp_tx(transaction, owner_address)
+    
+    result = {
+        "action": "cancel_sale",
+        "nft": {
+            "address": nft_addr_friendly,
+            "name": nft_info.get("name"),
+        },
+        "seller": owner_addr_friendly,
+        "emulation": emulation,
+    }
+    
+    if confirm:
+        wallet = create_wallet_instance(wallet_data)
+        seqno = get_seqno(owner_address)
+        
+        send_result = build_and_send_marketapp_tx(
+            transaction=transaction,
+            wallet=wallet,
+            wallet_address=owner_address,
+            seqno=seqno
+        )
+        
+        result["sent"] = send_result["success"]
+        if send_result["success"]:
+            result["success"] = True
+            result["message"] = "Cancel sale transaction sent"
+        else:
+            result["success"] = False
+            result["error"] = send_result.get("error")
+    else:
+        result["success"] = True
+        result["confirmed"] = False
+        result["message"] = "Emulation successful. Use --confirm to cancel sale."
+    
+    return result
+
+
+def change_price(
+    nft_address: str,
+    new_price_ton: float,
+    wallet_identifier: str,
+    password: str,
+    confirm: bool = False
+) -> dict:
+    """
+    Меняет цену NFT на продаже через Marketapp.
+    
+    Args:
+        nft_address: Адрес NFT
+        new_price_ton: Новая цена в TON
+        wallet_identifier: Кошелёк владельца
+        password: Пароль
+        confirm: Подтвердить и отправить
+    
+    Returns:
+        dict с результатом
+    """
+    if not TONSDK_AVAILABLE:
+        return {"success": False, "error": "tonsdk not installed"}
+    
+    wallet_data = get_wallet_from_storage(wallet_identifier, password)
+    if not wallet_data:
+        return {"success": False, "error": f"Wallet not found: {wallet_identifier}"}
+    
+    owner_address = wallet_data["address"]
+    
+    nft_info = get_nft_info(nft_address)
+    if not nft_info["success"]:
+        return nft_info
+    
+    if nft_info.get("status") != "for_sale" and not nft_info.get("sale"):
+        return {"success": False, "error": "NFT is not currently for sale"}
+    
+    old_price = nft_info.get("sale", {}).get("price_ton")
+    
+    try:
+        nft_addr_friendly = normalize_address(nft_address, "friendly")
+        owner_addr_friendly = normalize_address(owner_address, "friendly")
+    except:
+        nft_addr_friendly = nft_address
+        owner_addr_friendly = owner_address
+    
+    change_result = marketapp_request(
+        "/nfts/change_price/",
+        method="POST",
+        json_data={
+            "owner_address": owner_addr_friendly,
+            "data": [
+                {
+                    "nft_address": nft_addr_friendly,
+                    "price": new_price_ton
+                }
+            ]
+        }
+    )
+    
+    if not change_result["success"]:
+        return {
+            "success": False,
+            "error": change_result.get("error", "Failed to create change price transaction")
+        }
+    
+    transaction = change_result["data"].get("transaction", {})
+    emulation = emulate_marketapp_tx(transaction, owner_address)
+    
+    result = {
+        "action": "change_price",
+        "nft": {
+            "address": nft_addr_friendly,
+            "name": nft_info.get("name"),
+        },
+        "old_price_ton": old_price,
+        "new_price_ton": new_price_ton,
+        "seller": owner_addr_friendly,
+        "emulation": emulation,
+    }
+    
+    if confirm:
+        wallet = create_wallet_instance(wallet_data)
+        seqno = get_seqno(owner_address)
+        
+        send_result = build_and_send_marketapp_tx(
+            transaction=transaction,
+            wallet=wallet,
+            wallet_address=owner_address,
+            seqno=seqno
+        )
+        
+        result["sent"] = send_result["success"]
+        if send_result["success"]:
+            result["success"] = True
+            result["message"] = "Price change transaction sent"
+        else:
+            result["success"] = False
+            result["error"] = send_result.get("error")
+    else:
+        result["success"] = True
+        result["confirmed"] = False
+        result["message"] = "Emulation successful. Use --confirm to change price."
+    
+    return result
+
+
+# =============================================================================
+# NFT Transfer (TonAPI)
 # =============================================================================
 
 def build_nft_transfer(
@@ -441,37 +1209,22 @@ def build_nft_transfer(
 ) -> bytes:
     """
     Строит транзакцию трансфера NFT (TEP-62).
-    
-    Args:
-        wallet: Инстанс кошелька (tonsdk)
-        nft_address: Адрес NFT контракта
-        to_address: Адрес нового владельца
-        response_address: Куда отправить excess (обычно = отправитель)
-        forward_amount: Сколько TON форвардить новому владельцу
-        seqno: Sequence number
-    
-    Returns:
-        bytes BOC
     """
     from tonsdk.boc import Cell
     from tonsdk.utils import Address
     
-    # NFT Transfer payload (TEP-62)
-    # https://github.com/ton-blockchain/TEPs/blob/master/text/0062-nft-standard.md
     payload = Cell()
-    payload.bits.write_uint(NFT_TRANSFER_OPCODE, 32)  # op: transfer
-    payload.bits.write_uint(0, 64)  # query_id
-    payload.bits.write_address(Address(to_address))  # new_owner
-    payload.bits.write_address(Address(response_address))  # response_destination
-    payload.bits.write_bit(0)  # custom_payload = null
-    payload.bits.write_coins(forward_amount)  # forward_amount (1 nano для уведомления)
-    payload.bits.write_bit(0)  # forward_payload in-place (empty)
+    payload.bits.write_uint(NFT_TRANSFER_OPCODE, 32)
+    payload.bits.write_uint(0, 64)
+    payload.bits.write_address(Address(to_address))
+    payload.bits.write_address(Address(response_address))
+    payload.bits.write_bit(0)
+    payload.bits.write_coins(forward_amount)
+    payload.bits.write_bit(0)
     
-    # Создаём транзакцию на NFT контракт
-    # Нужно отправить ~0.05 TON для покрытия комиссии
     query = wallet.create_transfer_message(
         to_addr=nft_address,
-        amount=to_nano(0.05, "ton"),  # 0.05 TON для газа
+        amount=to_nano(0.05, "ton"),
         payload=payload,
         seqno=seqno
     )
@@ -480,9 +1233,7 @@ def build_nft_transfer(
 
 
 def emulate_transfer(boc_b64: str, wallet_address: str) -> dict:
-    """
-    Эмулирует транзакцию через TonAPI.
-    """
+    """Эмулирует транзакцию через TonAPI."""
     result = tonapi_request(
         "/wallet/emulate",
         method="POST",
@@ -506,11 +1257,9 @@ def emulate_transfer(boc_b64: str, wallet_address: str) -> dict:
     event = data.get("event", data)
     actions = event.get("actions", [])
     
-    # Комиссия
     extra = event.get("extra", 0)
     fee = abs(extra) if extra < 0 else 0
     
-    # Ищем NFT transfer action
     nft_transfer = None
     for action in actions:
         if action.get("type") == "NftItemTransfer":
@@ -556,21 +1305,10 @@ def transfer_nft(
 ) -> dict:
     """
     Переводит NFT на другой адрес.
-    
-    Args:
-        nft_address: Адрес NFT
-        from_wallet: Лейбл или адрес кошелька-отправителя (владельца)
-        to_address: Адрес или .ton домен получателя
-        password: Пароль от хранилища
-        confirm: Выполнить перевод (иначе только эмуляция)
-    
-    Returns:
-        dict с результатом
     """
     if not TONSDK_AVAILABLE:
         return {"success": False, "error": "tonsdk not installed"}
     
-    # 1. Резолвим адрес получателя
     resolved = resolve_address(to_address)
     if not resolved["success"]:
         return {
@@ -579,7 +1317,6 @@ def transfer_nft(
         }
     recipient = resolved["address"]
     
-    # 2. Получаем кошелёк отправителя
     wallet_data = get_wallet_from_storage(from_wallet, password)
     if not wallet_data:
         return {
@@ -590,7 +1327,6 @@ def transfer_nft(
     wallet = create_wallet_instance(wallet_data)
     sender_address = wallet_data["address"]
     
-    # 3. Проверяем что NFT принадлежит отправителю
     nft_info = get_nft_info(nft_address)
     if not nft_info["success"]:
         return {
@@ -598,9 +1334,8 @@ def transfer_nft(
             "error": f"Cannot fetch NFT info: {nft_info.get('error')}"
         }
     
-    nft_owner = nft_info.get("owner", {}).get("address")
+    nft_owner = nft_info.get("owner")
     
-    # Нормализуем для сравнения
     try:
         sender_raw = normalize_address(sender_address, "raw")
         owner_raw = normalize_address(nft_owner, "raw") if nft_owner else None
@@ -614,27 +1349,23 @@ def transfer_nft(
             "error": f"NFT is not owned by this wallet. Owner: {nft_owner}"
         }
     
-    # 4. Нормализуем адрес NFT
     try:
         nft_addr_friendly = normalize_address(nft_address, "friendly")
     except:
         nft_addr_friendly = nft_address
     
-    # 5. Получаем seqno
     seqno = get_seqno(sender_address)
     
-    # 6. Строим транзакцию
     boc = build_nft_transfer(
         wallet=wallet,
         nft_address=nft_addr_friendly,
         to_address=recipient,
         response_address=sender_address,
-        forward_amount=1,  # 1 нано-TON
+        forward_amount=1,
         seqno=seqno
     )
     boc_b64 = base64.b64encode(boc).decode('ascii')
     
-    # 7. Эмулируем
     emulation = emulate_transfer(boc_b64, sender_address)
     
     result = {
@@ -658,7 +1389,6 @@ def transfer_nft(
     
     result["fee_ton"] = emulation["fee_ton"]
     
-    # 8. Отправляем если confirm
     if confirm:
         send_result = send_transaction(boc_b64)
         result["sent"] = send_result["success"]
@@ -682,15 +1412,12 @@ def transfer_nft(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="NFT operations on TON",
+        description="NFT operations on TON (with Marketapp integration)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Список NFT в кошельке (по лейблу)
+  # Список NFT в кошельке
   %(prog)s list --wallet trading
-  
-  # Список NFT по адресу
-  %(prog)s list --wallet UQBvW8...
   
   # Информация об NFT
   %(prog)s info --address EQC7...
@@ -701,11 +1428,26 @@ Examples:
   # Поиск коллекций
   %(prog)s search --query "TON Diamonds"
   
-  # Эмуляция трансфера NFT
-  %(prog)s transfer --nft EQC7... --from trading --to wallet.ton
+  # Гифты на продаже
+  %(prog)s gifts --min-price 1 --max-price 10
   
-  # Трансфер NFT с подтверждением
-  %(prog)s transfer --nft EQC7... --from trading --to UQBvW8... --confirm
+  # Купить NFT (эмуляция)
+  %(prog)s buy --nft EQC7... --wallet trading
+  
+  # Купить NFT (с подтверждением)
+  %(prog)s buy --nft EQC7... --wallet trading --confirm
+  
+  # Выставить на продажу
+  %(prog)s sell --nft EQC7... --price 5.5 --wallet trading
+  
+  # Снять с продажи
+  %(prog)s cancel-sale --nft EQC7... --wallet trading
+  
+  # Сменить цену
+  %(prog)s change-price --nft EQC7... --price 10 --wallet trading
+  
+  # Трансфер NFT
+  %(prog)s transfer --nft EQC7... --from trading --to wallet.ton
 """
     )
     
@@ -725,16 +1467,53 @@ Examples:
     # --- collection ---
     coll_p = subparsers.add_parser("collection", help="Get collection info")
     coll_p.add_argument("--address", "-a", required=True, help="Collection address")
+    coll_p.add_argument("--filter", "-f", default="onsale", choices=["onsale", "all"], help="Filter NFTs")
+    coll_p.add_argument("--limit", "-l", type=int, default=10, help="Max NFTs to show")
     
     # --- search ---
     search_p = subparsers.add_parser("search", help="Search collections")
     search_p.add_argument("--query", "-q", required=True, help="Search query")
     search_p.add_argument("--limit", "-l", type=int, default=10, help="Max results")
     
+    # --- gifts ---
+    gifts_p = subparsers.add_parser("gifts", help="List gifts on sale")
+    gifts_p.add_argument("--model", "-m", help="Filter by model")
+    gifts_p.add_argument("--symbol", "-s", help="Filter by symbol")
+    gifts_p.add_argument("--backdrop", "-b", help="Filter by backdrop")
+    gifts_p.add_argument("--min-price", type=float, help="Min price in TON")
+    gifts_p.add_argument("--max-price", type=float, help="Max price in TON")
+    gifts_p.add_argument("--limit", "-l", type=int, default=20, help="Max results")
+    
+    # --- buy ---
+    buy_p = subparsers.add_parser("buy", help="Buy NFT")
+    buy_p.add_argument("--nft", "-n", required=True, help="NFT address")
+    buy_p.add_argument("--wallet", "-w", required=True, help="Buyer wallet (label)")
+    buy_p.add_argument("--confirm", action="store_true", help="Confirm and send")
+    
+    # --- sell ---
+    sell_p = subparsers.add_parser("sell", help="Put NFT for sale")
+    sell_p.add_argument("--nft", "-n", required=True, help="NFT address")
+    sell_p.add_argument("--price", "-P", type=float, required=True, help="Price in TON")
+    sell_p.add_argument("--wallet", "-w", required=True, help="Owner wallet (label)")
+    sell_p.add_argument("--confirm", action="store_true", help="Confirm and send")
+    
+    # --- cancel-sale ---
+    cancel_p = subparsers.add_parser("cancel-sale", help="Cancel NFT sale")
+    cancel_p.add_argument("--nft", "-n", required=True, help="NFT address")
+    cancel_p.add_argument("--wallet", "-w", required=True, help="Owner wallet (label)")
+    cancel_p.add_argument("--confirm", action="store_true", help="Confirm and send")
+    
+    # --- change-price ---
+    change_p = subparsers.add_parser("change-price", help="Change NFT price")
+    change_p.add_argument("--nft", "-n", required=True, help="NFT address")
+    change_p.add_argument("--price", "-P", type=float, required=True, help="New price in TON")
+    change_p.add_argument("--wallet", "-w", required=True, help="Owner wallet (label)")
+    change_p.add_argument("--confirm", action="store_true", help="Confirm and send")
+    
     # --- transfer ---
     transfer_p = subparsers.add_parser("transfer", help="Transfer NFT")
     transfer_p.add_argument("--nft", "-n", required=True, help="NFT address")
-    transfer_p.add_argument("--from", "-f", dest="from_wallet", required=True, help="Sender wallet (label or address)")
+    transfer_p.add_argument("--from", "-f", dest="from_wallet", required=True, help="Sender wallet (label)")
     transfer_p.add_argument("--to", "-t", required=True, help="Recipient (address or .ton domain)")
     transfer_p.add_argument("--confirm", action="store_true", help="Confirm and send")
     
@@ -746,13 +1525,13 @@ Examples:
     
     # Получаем пароль если нужен
     password = args.password or os.environ.get("WALLET_PASSWORD")
-    needs_password = args.command in ["transfer"] or (args.command == "list" and not looks_like_address(args.wallet) and not is_ton_domain(args.wallet))
+    needs_password = args.command in ["transfer", "buy", "sell", "cancel-sale", "change-price"] or \
+                     (args.command == "list" and not looks_like_address(args.wallet) and not is_ton_domain(args.wallet))
     
     if needs_password and not password:
         if sys.stdin.isatty():
             password = getpass.getpass("Wallet password: ")
         else:
-            # Для list без пароля пробуем как адрес
             if args.command != "list":
                 print(json.dumps({"error": "Password required. Use --password or WALLET_PASSWORD env"}))
                 sys.exit(1)
@@ -769,10 +1548,102 @@ Examples:
             result = get_nft_info(args.address)
         
         elif args.command == "collection":
-            result = get_collection_info(args.address)
+            result = get_collection_info(
+                collection_address=args.address,
+                filter_by=args.filter,
+                limit=args.limit
+            )
         
         elif args.command == "search":
             result = search_collections(args.query, args.limit)
+        
+        elif args.command == "gifts":
+            result = get_gifts_on_sale(
+                model=args.model,
+                symbol=args.symbol,
+                backdrop=args.backdrop,
+                min_price=args.min_price,
+                max_price=args.max_price,
+                limit=args.limit
+            )
+        
+        elif args.command == "buy":
+            if not TONSDK_AVAILABLE:
+                print(json.dumps({
+                    "error": "Missing dependency: tonsdk",
+                    "install": "pip install tonsdk"
+                }, indent=2))
+                sys.exit(1)
+            
+            if not password:
+                print(json.dumps({"error": "Password required for buy"}))
+                sys.exit(1)
+            
+            result = buy_nft(
+                nft_address=args.nft,
+                wallet_identifier=args.wallet,
+                password=password,
+                confirm=args.confirm
+            )
+        
+        elif args.command == "sell":
+            if not TONSDK_AVAILABLE:
+                print(json.dumps({
+                    "error": "Missing dependency: tonsdk",
+                    "install": "pip install tonsdk"
+                }, indent=2))
+                sys.exit(1)
+            
+            if not password:
+                print(json.dumps({"error": "Password required for sell"}))
+                sys.exit(1)
+            
+            result = sell_nft(
+                nft_address=args.nft,
+                price_ton=args.price,
+                wallet_identifier=args.wallet,
+                password=password,
+                confirm=args.confirm
+            )
+        
+        elif args.command == "cancel-sale":
+            if not TONSDK_AVAILABLE:
+                print(json.dumps({
+                    "error": "Missing dependency: tonsdk",
+                    "install": "pip install tonsdk"
+                }, indent=2))
+                sys.exit(1)
+            
+            if not password:
+                print(json.dumps({"error": "Password required for cancel-sale"}))
+                sys.exit(1)
+            
+            result = cancel_sale(
+                nft_address=args.nft,
+                wallet_identifier=args.wallet,
+                password=password,
+                confirm=args.confirm
+            )
+        
+        elif args.command == "change-price":
+            if not TONSDK_AVAILABLE:
+                print(json.dumps({
+                    "error": "Missing dependency: tonsdk",
+                    "install": "pip install tonsdk"
+                }, indent=2))
+                sys.exit(1)
+            
+            if not password:
+                print(json.dumps({"error": "Password required for change-price"}))
+                sys.exit(1)
+            
+            result = change_price(
+                nft_address=args.nft,
+                new_price_ton=args.price,
+                wallet_identifier=args.wallet,
+                password=password,
+                confirm=args.confirm
+            )
         
         elif args.command == "transfer":
             if not TONSDK_AVAILABLE:

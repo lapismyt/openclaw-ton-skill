@@ -11,6 +11,7 @@ OpenClaw-скилл для полноценной работы с блокчей
 | **swap.coffee** | DEX-агрегатор (свапы, роутинг), Yield-агрегатор (пулы, доходности) | [docs.swap.coffee](https://docs.swap.coffee) |
 | **TonAPI** | Кошельки, балансы, транзакции, NFT, эмуляция, события | [tonapi.io/api-v2](https://tonapi.io/api-v2) |
 | **DYOR** | Аналитика токенов, цены, пулы, рейтинг доверия, скам-детект | [docs.dyor.io](https://docs.dyor.io/ru/technical-guides/introduction) |
+| **Marketapp** | NFT торговля (покупка, продажа, смена цены), гифты, коллекции | [api.marketapp.ws](https://api.marketapp.ws/docs) |
 | **TON Docs** | Документация блокчейна TON (адреса, контракты, TVM, Jettons, NFT) | [docs.ton.org](https://docs.ton.org/) |
 
 ## Модули
