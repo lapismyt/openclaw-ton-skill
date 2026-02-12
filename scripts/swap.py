@@ -1,0 +1,764 @@
+#!/usr/bin/env python3
+"""
+OpenClaw TON Skill — Свапы через swap.coffee
+
+- Получение котировки (routing API)
+- Эмуляция свапа
+- Исполнение свапа
+- Статус транзакции
+
+Документация: https://docs.swap.coffee/technical-guides/aggregator-api/introduction
+"""
+
+import os
+import sys
+import json
+import base64
+import argparse
+import getpass
+from pathlib import Path
+from typing import Optional, List, Dict, Any
+from datetime import datetime
+
+# Локальный импорт
+script_dir = Path(__file__).parent
+sys.path.insert(0, str(script_dir))
+
+from utils import (
+    api_request,
+    tonapi_request,
+    load_config,
+    is_valid_address,
+    normalize_address,
+    raw_to_friendly
+)
+from wallet import WalletStorage, get_jetton_balances, get_account_info
+from dns import resolve_address
+
+# TON SDK
+try:
+    from tonsdk.contract.wallet import Wallets, WalletVersionEnum
+    from tonsdk.utils import to_nano, from_nano
+    from tonsdk.boc import Cell
+    TONSDK_AVAILABLE = True
+except ImportError:
+    TONSDK_AVAILABLE = False
+
+
+# =============================================================================
+# Constants
+# =============================================================================
+
+SWAP_COFFEE_API = "https://backend.swap.coffee"
+SWAP_COFFEE_API_V2 = "https://backend.swap.coffee/v2"
+
+# Известные токены (symbol -> master address)
+KNOWN_TOKENS = {
+    "TON": "native",
+    "USDT": "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",
+    "USDC": "EQC61IQRl0_la95t27xhIpjxZt32vl1QQVF2UgTNuvD18W-4",
+    "NOT": "EQAvlWFDxGF2lXm67y4yzC17wYKD9A0guwPkMs1gOsM__NOT",
+    "STON": "EQA2kCVNwVsil2EM2mB0SkXytxCqWFOx9ySUfP2qVLZMSgHD",
+    "SCALE": "EQBlqsm144Dq6SjbPI4jjZvA1hqTIP3CvHovbIfW_t-SCALE",
+    "JETTON": "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs",  # Example
+}
+
+
+# =============================================================================
+# Swap.coffee API
+# =============================================================================
+
+def get_swap_coffee_key() -> Optional[str]:
+    """Получает API ключ swap.coffee из конфига."""
+    config = load_config()
+    return config.get("swap_coffee_key") or None
+
+
+def swap_coffee_request(
+    endpoint: str,
+    method: str = "GET",
+    params: Optional[dict] = None,
+    json_data: Optional[dict] = None,
+    version: str = "v2"
+) -> dict:
+    """
+    Запрос к swap.coffee API.
+    
+    Args:
+        endpoint: Endpoint (например "/route")
+        method: HTTP метод
+        params: Query параметры
+        json_data: JSON body
+        version: Версия API ("v1" или "v2")
+    
+    Returns:
+        dict с результатом
+    """
+    base_url = SWAP_COFFEE_API_V2 if version == "v2" else SWAP_COFFEE_API
+    api_key = get_swap_coffee_key()
+    
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    
+    return api_request(
+        url=f"{base_url}{endpoint}",
+        method=method,
+        headers=headers if headers else None,
+        params=params,
+        json_data=json_data
+    )
+
+
+def resolve_token_address(token: str) -> str:
+    """
+    Резолвит токен в адрес мастер-контракта.
+    
+    Args:
+        token: Символ токена (TON, USDT) или адрес
+    
+    Returns:
+        Адрес или "native" для TON
+    """
+    token_upper = token.upper()
+    
+    # Проверяем известные токены
+    if token_upper in KNOWN_TOKENS:
+        return KNOWN_TOKENS[token_upper]
+    
+    # Если похоже на адрес — возвращаем как есть
+    if is_valid_address(token) or ':' in token:
+        return token
+    
+    # Пробуем найти через API
+    # TODO: добавить lookup через TonAPI или swap.coffee
+    
+    return token
+
+
+def get_token_info(token_address: str) -> dict:
+    """Получает информацию о токене."""
+    if token_address == "native":
+        return {
+            "address": "native",
+            "symbol": "TON",
+            "name": "Toncoin",
+            "decimals": 9
+        }
+    
+    # Запрос к TonAPI
+    result = tonapi_request(f"/jettons/{token_address}")
+    if result["success"]:
+        data = result["data"]
+        return {
+            "address": token_address,
+            "symbol": data.get("metadata", {}).get("symbol", "???"),
+            "name": data.get("metadata", {}).get("name", "Unknown"),
+            "decimals": data.get("metadata", {}).get("decimals", 9),
+            "image": data.get("metadata", {}).get("image")
+        }
+    
+    return {
+        "address": token_address,
+        "symbol": "???",
+        "name": "Unknown",
+        "decimals": 9
+    }
+
+
+# =============================================================================
+# Quote / Route
+# =============================================================================
+
+def get_swap_quote(
+    input_token: str,
+    output_token: str,
+    input_amount: float,
+    sender_address: str,
+    slippage: float = 0.5
+) -> dict:
+    """
+    Получает котировку свапа.
+    
+    Args:
+        input_token: Символ или адрес входного токена
+        output_token: Символ или адрес выходного токена
+        input_amount: Количество входного токена (человекочитаемое)
+        sender_address: Адрес кошелька
+        slippage: Допустимое проскальзывание в %
+    
+    Returns:
+        dict с котировкой (маршрут, ожидаемый выход, комиссии)
+    """
+    # Резолвим токены
+    input_addr = resolve_token_address(input_token)
+    output_addr = resolve_token_address(output_token)
+    
+    # Получаем decimals
+    input_info = get_token_info(input_addr)
+    output_info = get_token_info(output_addr)
+    
+    input_decimals = input_info.get("decimals", 9)
+    output_decimals = output_info.get("decimals", 9)
+    
+    # Конвертируем в минимальные единицы
+    input_amount_raw = int(input_amount * (10 ** input_decimals))
+    
+    # Запрос к swap.coffee API
+    params = {
+        "input_token": input_addr,
+        "output_token": output_addr,
+        "input_amount": str(input_amount_raw),
+        "sender_address": sender_address,
+        "slippage": str(slippage / 100),  # API принимает как долю (0.005 = 0.5%)
+    }
+    
+    result = swap_coffee_request("/route", params=params)
+    
+    if not result["success"]:
+        return {
+            "success": False,
+            "error": result.get("error", "Failed to get quote"),
+            "input_token": input_token,
+            "output_token": output_token
+        }
+    
+    data = result["data"]
+    
+    # Парсим ответ
+    output_amount_raw = int(data.get("output_amount", 0))
+    output_amount = output_amount_raw / (10 ** output_decimals)
+    
+    min_output_raw = int(data.get("min_output_amount", output_amount_raw))
+    min_output = min_output_raw / (10 ** output_decimals)
+    
+    # Вычисляем эффективную цену
+    if input_amount > 0:
+        price = output_amount / input_amount
+    else:
+        price = 0
+    
+    # Маршрут
+    route = data.get("route", [])
+    route_info = []
+    for step in route:
+        route_info.append({
+            "dex": step.get("dex_name", step.get("dex", "unknown")),
+            "pool": step.get("pool_address"),
+            "input": step.get("input_token"),
+            "output": step.get("output_token")
+        })
+    
+    return {
+        "success": True,
+        "input_token": {
+            "symbol": input_info.get("symbol"),
+            "address": input_addr,
+            "amount": input_amount,
+            "amount_raw": input_amount_raw
+        },
+        "output_token": {
+            "symbol": output_info.get("symbol"),
+            "address": output_addr,
+            "amount": output_amount,
+            "amount_raw": output_amount_raw,
+            "min_amount": min_output,
+            "min_amount_raw": min_output_raw
+        },
+        "price": price,
+        "price_impact": data.get("price_impact"),
+        "slippage": slippage,
+        "route": route_info,
+        "route_count": len(route_info),
+        "fees": data.get("fees", {}),
+        "gas_estimate": data.get("gas_estimate"),
+        "raw_response": data
+    }
+
+
+# =============================================================================
+# Build Swap Transactions
+# =============================================================================
+
+def build_swap_transactions(
+    input_token: str,
+    output_token: str,
+    input_amount: float,
+    sender_address: str,
+    slippage: float = 0.5
+) -> dict:
+    """
+    Строит транзакции для выполнения свапа.
+    
+    Args:
+        input_token: Символ или адрес входного токена
+        output_token: Символ или адрес выходного токена
+        input_amount: Количество входного токена
+        sender_address: Адрес кошелька
+        slippage: Допустимое проскальзывание в %
+    
+    Returns:
+        dict с транзакциями (BOC) для подписания
+    """
+    # Резолвим токены
+    input_addr = resolve_token_address(input_token)
+    output_addr = resolve_token_address(output_token)
+    
+    input_info = get_token_info(input_addr)
+    input_decimals = input_info.get("decimals", 9)
+    input_amount_raw = int(input_amount * (10 ** input_decimals))
+    
+    # Запрос на построение транзакций
+    result = swap_coffee_request(
+        "/route/transactions",
+        method="POST",
+        json_data={
+            "input_token": input_addr,
+            "output_token": output_addr,
+            "input_amount": str(input_amount_raw),
+            "sender_address": sender_address,
+            "slippage": str(slippage / 100),
+        }
+    )
+    
+    if not result["success"]:
+        return {
+            "success": False,
+            "error": result.get("error", "Failed to build transactions")
+        }
+    
+    data = result["data"]
+    
+    # Парсим транзакции
+    transactions = data.get("transactions", [])
+    
+    return {
+        "success": True,
+        "transactions": transactions,
+        "transactions_count": len(transactions),
+        "raw_response": data
+    }
+
+
+# =============================================================================
+# Execute Swap
+# =============================================================================
+
+def get_wallet_from_storage(identifier: str, password: str) -> Optional[dict]:
+    """Получает кошелёк из хранилища."""
+    storage = WalletStorage(password)
+    return storage.get_wallet(identifier, include_secrets=True)
+
+
+def create_wallet_instance(wallet_data: dict):
+    """Создаёт инстанс кошелька для подписания."""
+    if not TONSDK_AVAILABLE:
+        raise RuntimeError("tonsdk not available")
+    
+    mnemonic = wallet_data.get("mnemonic")
+    if not mnemonic:
+        raise ValueError("Wallet has no mnemonic")
+    
+    version_map = {
+        "v3r2": WalletVersionEnum.v3r2,
+        "v4r2": WalletVersionEnum.v4r2,
+    }
+    
+    version = wallet_data.get("version", "v4r2")
+    wallet_version = version_map.get(version.lower(), WalletVersionEnum.v4r2)
+    
+    _, _, _, wallet = Wallets.from_mnemonics(
+        mnemonic,
+        wallet_version,
+        workchain=0
+    )
+    
+    return wallet
+
+
+def get_seqno(address: str) -> int:
+    """Получает seqno кошелька."""
+    result = tonapi_request(f"/wallet/{address}/seqno")
+    if result["success"]:
+        return result["data"].get("seqno", 0)
+    return 0
+
+
+def emulate_transaction(boc_b64: str) -> dict:
+    """Эмулирует транзакцию."""
+    result = tonapi_request(
+        "/wallet/emulate",
+        method="POST",
+        json_data={"boc": boc_b64}
+    )
+    
+    if not result["success"]:
+        return {"success": False, "error": result.get("error")}
+    
+    data = result["data"]
+    event = data.get("event", data)
+    extra = event.get("extra", 0)
+    fee = abs(extra) if extra < 0 else 0
+    
+    return {
+        "success": True,
+        "fee_nano": fee,
+        "fee_ton": fee / 1e9,
+        "actions": event.get("actions", [])
+    }
+
+
+def send_transaction(boc_b64: str) -> dict:
+    """Отправляет транзакцию."""
+    result = tonapi_request(
+        "/blockchain/message",
+        method="POST",
+        json_data={"boc": boc_b64}
+    )
+    
+    if not result["success"]:
+        return {"success": False, "error": result.get("error")}
+    
+    return {"success": True, "data": result.get("data")}
+
+
+def execute_swap(
+    from_wallet: str,
+    input_token: str,
+    output_token: str,
+    input_amount: float,
+    slippage: float = 0.5,
+    password: str = None,
+    confirm: bool = False
+) -> dict:
+    """
+    Выполняет свап токенов.
+    
+    Args:
+        from_wallet: Лейбл или адрес кошелька
+        input_token: Символ или адрес входного токена
+        output_token: Символ или адрес выходного токена
+        input_amount: Количество для свапа
+        slippage: Проскальзывание в %
+        password: Пароль
+        confirm: Подтвердить выполнение
+    
+    Returns:
+        dict с результатом (эмуляция или выполнение)
+    """
+    if not TONSDK_AVAILABLE:
+        return {"success": False, "error": "tonsdk not installed"}
+    
+    # 1. Получаем кошелёк
+    wallet_data = get_wallet_from_storage(from_wallet, password)
+    if not wallet_data:
+        return {"success": False, "error": f"Wallet not found: {from_wallet}"}
+    
+    sender_address = wallet_data["address"]
+    
+    # 2. Получаем котировку
+    quote = get_swap_quote(
+        input_token=input_token,
+        output_token=output_token,
+        input_amount=input_amount,
+        sender_address=sender_address,
+        slippage=slippage
+    )
+    
+    if not quote["success"]:
+        return quote
+    
+    # 3. Строим транзакции
+    tx_result = build_swap_transactions(
+        input_token=input_token,
+        output_token=output_token,
+        input_amount=input_amount,
+        sender_address=sender_address,
+        slippage=slippage
+    )
+    
+    if not tx_result["success"]:
+        return tx_result
+    
+    transactions = tx_result.get("transactions", [])
+    
+    if not transactions:
+        return {"success": False, "error": "No transactions returned by API"}
+    
+    # 4. Подписываем транзакции
+    wallet = create_wallet_instance(wallet_data)
+    seqno = get_seqno(sender_address)
+    
+    signed_txs = []
+    total_fee = 0
+    
+    for i, tx in enumerate(transactions):
+        # Каждая транзакция содержит to_address, amount, payload
+        to_addr = tx.get("to", tx.get("address"))
+        amount = int(tx.get("value", tx.get("amount", 0)))
+        payload_b64 = tx.get("payload", tx.get("body"))
+        
+        # Создаём Cell из payload
+        payload = None
+        if payload_b64:
+            try:
+                payload_bytes = base64.b64decode(payload_b64)
+                payload = Cell.one_from_boc(payload_bytes)
+            except:
+                pass
+        
+        # Создаём transfer
+        query = wallet.create_transfer_message(
+            to_addr=to_addr,
+            amount=amount,
+            payload=payload,
+            seqno=seqno + i  # Увеличиваем seqno для каждой транзакции
+        )
+        
+        boc = query["message"].to_boc(False)
+        boc_b64 = base64.b64encode(boc).decode('ascii')
+        
+        # Эмулируем
+        emulation = emulate_transaction(boc_b64)
+        
+        signed_txs.append({
+            "index": i,
+            "to": to_addr,
+            "amount_nano": amount,
+            "amount_ton": amount / 1e9,
+            "boc": boc_b64,
+            "emulation": emulation
+        })
+        
+        if emulation["success"]:
+            total_fee += emulation.get("fee_nano", 0)
+    
+    result = {
+        "action": "swap",
+        "wallet": sender_address,
+        "quote": {
+            "input": quote["input_token"],
+            "output": quote["output_token"],
+            "price": quote["price"],
+            "price_impact": quote.get("price_impact"),
+            "route_count": quote["route_count"]
+        },
+        "transactions": signed_txs,
+        "total_fee_nano": total_fee,
+        "total_fee_ton": total_fee / 1e9,
+        "slippage": slippage
+    }
+    
+    # 5. Отправляем если confirm
+    if confirm:
+        sent_count = 0
+        errors = []
+        
+        for tx in signed_txs:
+            send_result = send_transaction(tx["boc"])
+            if send_result["success"]:
+                sent_count += 1
+            else:
+                errors.append(send_result.get("error"))
+        
+        result["sent_count"] = sent_count
+        result["total_transactions"] = len(signed_txs)
+        
+        if sent_count == len(signed_txs):
+            result["success"] = True
+            result["message"] = "Swap executed successfully"
+        elif sent_count > 0:
+            result["success"] = True
+            result["message"] = f"Partially executed: {sent_count}/{len(signed_txs)} transactions sent"
+            result["errors"] = errors
+        else:
+            result["success"] = False
+            result["error"] = "Failed to send transactions"
+            result["errors"] = errors
+    else:
+        result["success"] = True
+        result["confirmed"] = False
+        result["message"] = "Swap simulated. Use --confirm to execute."
+    
+    return result
+
+
+# =============================================================================
+# Swap Status
+# =============================================================================
+
+def get_swap_status(tx_hash: str) -> dict:
+    """
+    Получает статус транзакции свапа.
+    
+    Args:
+        tx_hash: Хэш транзакции
+    
+    Returns:
+        dict со статусом
+    """
+    # Пробуем swap.coffee API
+    result = swap_coffee_request(f"/route/status/{tx_hash}")
+    
+    if result["success"]:
+        return {
+            "success": True,
+            "source": "swap.coffee",
+            "status": result["data"]
+        }
+    
+    # Fallback на TonAPI
+    result = tonapi_request(f"/blockchain/transactions/{tx_hash}")
+    
+    if result["success"]:
+        data = result["data"]
+        return {
+            "success": True,
+            "source": "tonapi",
+            "hash": tx_hash,
+            "status": "completed" if data.get("success") else "failed",
+            "lt": data.get("lt"),
+            "utime": data.get("utime"),
+            "fee": data.get("total_fees"),
+            "raw_response": data
+        }
+    
+    return {
+        "success": False,
+        "error": "Transaction not found"
+    }
+
+
+# =============================================================================
+# CLI
+# =============================================================================
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Token swaps via swap.coffee",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Получить котировку
+  %(prog)s quote --from TON --to USDT --amount 10 --wallet UQBvW8...
+  
+  # Эмуляция свапа (без выполнения)
+  %(prog)s execute --wallet trading --from TON --to USDT --amount 10
+  
+  # Выполнить свап
+  %(prog)s execute --wallet trading --from TON --to USDT --amount 10 --confirm
+  
+  # Свап с указанием slippage
+  %(prog)s execute --wallet main --from USDT --to TON --amount 100 --slippage 1.0 --confirm
+  
+  # Проверить статус
+  %(prog)s status --hash abc123...
+
+Known tokens: TON, USDT, USDC, NOT, STON, SCALE
+"""
+    )
+    
+    parser.add_argument("--password", "-p", help="Wallet password (or WALLET_PASSWORD env)")
+    
+    subparsers = parser.add_subparsers(dest="command", help="Commands")
+    
+    # --- quote ---
+    quote_p = subparsers.add_parser("quote", help="Get swap quote")
+    quote_p.add_argument("--from", "-f", dest="input_token", required=True, help="Input token (symbol or address)")
+    quote_p.add_argument("--to", "-t", dest="output_token", required=True, help="Output token (symbol or address)")
+    quote_p.add_argument("--amount", "-a", type=float, required=True, help="Input amount")
+    quote_p.add_argument("--wallet", "-w", required=True, help="Wallet address for quote")
+    quote_p.add_argument("--slippage", "-s", type=float, default=0.5, help="Slippage tolerance %% (default: 0.5)")
+    
+    # --- execute ---
+    exec_p = subparsers.add_parser("execute", help="Execute swap")
+    exec_p.add_argument("--wallet", "-w", required=True, help="Wallet label or address")
+    exec_p.add_argument("--from", "-f", dest="input_token", required=True, help="Input token")
+    exec_p.add_argument("--to", "-t", dest="output_token", required=True, help="Output token")
+    exec_p.add_argument("--amount", "-a", type=float, required=True, help="Input amount")
+    exec_p.add_argument("--slippage", "-s", type=float, default=0.5, help="Slippage %% (default: 0.5)")
+    exec_p.add_argument("--confirm", action="store_true", help="Confirm and execute swap")
+    
+    # --- status ---
+    status_p = subparsers.add_parser("status", help="Get swap/transaction status")
+    status_p.add_argument("--hash", "-x", required=True, help="Transaction hash")
+    
+    # --- tokens ---
+    tokens_p = subparsers.add_parser("tokens", help="List known tokens")
+    
+    args = parser.parse_args()
+    
+    if not args.command:
+        parser.print_help()
+        return
+    
+    try:
+        if args.command == "quote":
+            # Для quote не нужен пароль если передан полный адрес
+            wallet_addr = args.wallet
+            if not is_valid_address(wallet_addr):
+                # Может быть лейбл — нужен пароль
+                password = args.password or os.environ.get("WALLET_PASSWORD")
+                if password:
+                    wallet_data = get_wallet_from_storage(wallet_addr, password)
+                    if wallet_data:
+                        wallet_addr = wallet_data["address"]
+            
+            result = get_swap_quote(
+                input_token=args.input_token,
+                output_token=args.output_token,
+                input_amount=args.amount,
+                sender_address=wallet_addr,
+                slippage=args.slippage
+            )
+        
+        elif args.command == "execute":
+            if not TONSDK_AVAILABLE:
+                print(json.dumps({"error": "tonsdk not installed", "install": "pip install tonsdk"}, indent=2))
+                sys.exit(1)
+            
+            password = args.password or os.environ.get("WALLET_PASSWORD")
+            if not password:
+                if sys.stdin.isatty():
+                    password = getpass.getpass("Wallet password: ")
+                else:
+                    print(json.dumps({"error": "Password required"}))
+                    sys.exit(1)
+            
+            result = execute_swap(
+                from_wallet=args.wallet,
+                input_token=args.input_token,
+                output_token=args.output_token,
+                input_amount=args.amount,
+                slippage=args.slippage,
+                password=password,
+                confirm=args.confirm
+            )
+        
+        elif args.command == "status":
+            result = get_swap_status(args.hash)
+        
+        elif args.command == "tokens":
+            result = {
+                "success": True,
+                "tokens": [
+                    {"symbol": k, "address": v}
+                    for k, v in KNOWN_TOKENS.items()
+                ]
+            }
+        
+        else:
+            result = {"error": f"Unknown command: {args.command}"}
+        
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        
+        if not result.get("success", False):
+            sys.exit(1)
+        
+    except Exception as e:
+        print(json.dumps({"error": str(e)}, indent=2))
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
