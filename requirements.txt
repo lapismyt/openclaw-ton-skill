@@ -1,0 +1,4 @@
+# OpenClaw TON Skill dependencies
+requests>=2.28.0
+cryptography>=41.0.0
+tonsdk>=1.0.15

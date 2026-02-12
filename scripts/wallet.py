@@ -233,9 +233,13 @@ def get_account_info(address: str) -> dict:
     Returns:
         dict с balance, status, и другими данными
     """
-    # Нормализуем адрес
+    # TonAPI принимает адрес как есть (user-friendly или raw с URL-encoding)
+    # Проще использовать user-friendly формат
     try:
-        addr = normalize_address(address, "raw").replace(":", "%3A")
+        if ':' in address:
+            addr = raw_to_friendly(address)
+        else:
+            addr = address
     except:
         addr = address
     
@@ -270,7 +274,10 @@ def get_jetton_balances(address: str) -> dict:
         dict со списком жетонов и их балансов
     """
     try:
-        addr = normalize_address(address, "raw").replace(":", "%3A")
+        if ':' in address:
+            addr = raw_to_friendly(address)
+        else:
+            addr = address
     except:
         addr = address
     

@@ -45,7 +45,7 @@ CONFIG_FILE = SKILL_DIR / "config.json"
 WALLETS_FILE = SKILL_DIR / "wallets.enc"
 
 # TonAPI
-TONAPI_BASE = "https://tonapi.io/api/v2"
+TONAPI_BASE = "https://tonapi.io/v2"
 
 
 # =============================================================================
@@ -432,7 +432,9 @@ def api_request(
     """
     session = create_http_session(retries=retries, timeout=timeout)
     
-    req_headers = headers.copy() if headers else {}
+    req_headers = {"Accept": "application/json"}
+    if headers:
+        req_headers.update(headers)
     if api_key:
         req_headers[api_key_header] = f"{api_key_prefix}{api_key}"
     
