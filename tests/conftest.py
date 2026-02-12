@@ -276,6 +276,7 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "wallet: Wallet module tests")
     config.addinivalue_line("markers", "transfer: Transfer module tests")
     config.addinivalue_line("markers", "swap: Swap module tests")
+    config.addinivalue_line("markers", "utils: Utils module tests")
 
 
 # =============================================================================

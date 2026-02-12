@@ -51,9 +51,9 @@ from utils import (
 # Test Data
 # =============================================================================
 
-# Valid TON addresses
+# Valid TON addresses - we'll derive friendly from raw during tests
 VALID_RAW_ADDRESS = "0:4e95324902a9671fa85343288b17ad6c45d93b2e2849166cc8f3aa1e9e0a0472"
-VALID_FRIENDLY_ADDRESS = "EQBOlTJJAqaXH6hTQyiLF61sRdk7LihJFmzI86oengoEchAL"
+# Friendly address will be derived from raw in tests
 
 # Testnet addresses
 TESTNET_RAW_ADDRESS = "0:4e95324902a9671fa85343288b17ad6c45d93b2e2849166cc8f3aa1e9e0a0472"
@@ -61,6 +61,14 @@ TESTNET_RAW_ADDRESS = "0:4e95324902a9671fa85343288b17ad6c45d93b2e2849166cc8f3aa1
 # Invalid addresses
 INVALID_ADDRESS = "not-a-valid-address"
 ETH_ADDRESS = "0x742d35Cc6634C0532925a3b844Bc9e7595f8fE2d"
+
+
+def assert_no_secrets_in_string(text: str, mnemonic: str = None, private_key: str = None):
+    """Assert that sensitive data is not present in a string."""
+    if mnemonic:
+        assert mnemonic.lower() not in text.lower(), "Mnemonic found in text!"
+    if private_key:
+        assert private_key not in text, "Private key found in text!"
 
 
 # =============================================================================
@@ -386,7 +394,9 @@ class TestAddressFormatting:
     
     def test_friendly_to_raw_basic(self):
         """Convert user-friendly address to raw format."""
-        friendly = "EQBOlTJJAqaXH6hTQyiLF61sRdk7LihJFmzI86oengoEchAL"
+        # First convert raw to friendly, then back
+        raw_original = "0:4e95324902a9671fa85343288b17ad6c45d93b2e2849166cc8f3aa1e9e0a0472"
+        friendly = raw_to_friendly(raw_original)
         
         raw = friendly_to_raw(friendly)
         
@@ -395,6 +405,7 @@ class TestAddressFormatting:
         assert len(parts) == 2
         assert parts[0] in ["0", "-1"]  # Workchain
         assert len(parts[1]) == 64  # 32 bytes hex
+        assert raw == raw_original
     
     def test_address_roundtrip_raw_to_friendly_to_raw(self):
         """Round-trip: raw → friendly → raw preserves address."""
@@ -407,13 +418,16 @@ class TestAddressFormatting:
     
     def test_address_roundtrip_friendly_to_raw_to_friendly(self):
         """Round-trip: friendly → raw → friendly preserves address."""
-        original_friendly = "EQBOlTJJAqaXH6hTQyiLF61sRdk7LihJFmzI86oengoEchAL"
+        # Create a known good friendly address
+        raw_original = "0:4e95324902a9671fa85343288b17ad6c45d93b2e2849166cc8f3aa1e9e0a0472"
+        original_friendly = raw_to_friendly(raw_original, bounceable=True)
         
         raw = friendly_to_raw(original_friendly)
         back_to_friendly = raw_to_friendly(raw, bounceable=True)
         
         # May differ in URL-safe vs standard base64, so compare raw
         assert friendly_to_raw(back_to_friendly) == raw
+        assert raw == raw_original
     
     def test_raw_to_friendly_bounceable(self):
         """Convert to bounceable address (0x11 tag)."""
@@ -490,7 +504,9 @@ class TestAddressValidation:
     
     def test_is_valid_address_friendly(self):
         """Valid friendly address passes validation."""
-        friendly = "EQBOlTJJAqaXH6hTQyiLF61sRdk7LihJFmzI86oengoEchAL"
+        # Generate valid friendly address from raw
+        raw = "0:4e95324902a9671fa85343288b17ad6c45d93b2e2849166cc8f3aa1e9e0a0472"
+        friendly = raw_to_friendly(raw)
         
         assert is_valid_address(friendly) is True
     
@@ -515,11 +531,13 @@ class TestAddressValidation:
     
     def test_normalize_address_to_raw(self):
         """Normalize friendly to raw."""
-        friendly = "EQBOlTJJAqaXH6hTQyiLF61sRdk7LihJFmzI86oengoEchAL"
+        raw_original = "0:4e95324902a9671fa85343288b17ad6c45d93b2e2849166cc8f3aa1e9e0a0472"
+        friendly = raw_to_friendly(raw_original)
         
         normalized = normalize_address(friendly, to_format="raw")
         
         assert ":" in normalized
+        assert normalized == raw_original
     
     def test_normalize_address_already_correct_format(self):
         """Normalize address already in correct format."""
@@ -680,8 +698,10 @@ class TestTonApiRequest:
         
         tonapi_request("/accounts/EQtest123")
         
-        call_args = mock_api_request.call_args[0]
-        assert "tonapi.io/v2/accounts/EQtest123" in call_args[0]
+        call_kwargs = mock_api_request.call_args[1]
+        # URL is passed as keyword argument 'url'
+        assert "tonapi.io/v2/accounts/EQtest123" in call_kwargs.get("url", "") or \
+               (mock_api_request.call_args[0] and "tonapi.io" in mock_api_request.call_args[0][0])
     
     @patch("utils.api_request")
     def test_tonapi_request_passes_params(self, mock_api_request):

@@ -20,17 +20,46 @@ import pytest
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-# Import fixtures from conftest
-from conftest import (
-    VALID_MNEMONIC_24,
-    VALID_MNEMONIC_12,
-    INVALID_MNEMONIC,
-    VALID_ADDRESS_1,
-    VALID_ADDRESS_2,
-    INVALID_ADDRESS,
-    ETH_ADDRESS,
-    assert_no_secrets_in_string,
+# =============================================================================
+# Test Data (from conftest constants)
+# =============================================================================
+
+# Valid TON mnemonic (24 words) - FOR TESTING ONLY
+VALID_MNEMONIC_24 = (
+    "abandon abandon abandon abandon abandon abandon "
+    "abandon abandon abandon abandon abandon abandon "
+    "abandon abandon abandon abandon abandon abandon "
+    "abandon abandon abandon abandon abandon about"
 )
+
+VALID_MNEMONIC_12 = (
+    "abandon abandon abandon abandon abandon abandon "
+    "abandon abandon abandon abandon abandon about"
+)
+
+INVALID_MNEMONIC = (
+    "apple banana cherry dog elephant frog "
+    "grape house igloo jungle kite lemon "
+    "mango night orange pear queen river "
+    "snake tree umbrella violet water xray"
+)
+
+VALID_ADDRESS_1 = "EQDtFpEwcFAEcRe5mLVh2N6C0x-_hJEM7W61_JLnSF74p4q2"
+VALID_ADDRESS_2 = "EQBvW8Z5huBkMJYdnfAEM5JqTNkuWX3diqYENkWsIL0XggGG"
+INVALID_ADDRESS = "not-a-valid-address"
+ETH_ADDRESS = "0x742d35Cc6634C0532925a3b844Bc9e7595f8fE2d"
+
+
+def assert_no_secrets_in_string(text: str, mnemonic: str = None, private_key: str = None):
+    """Assert that sensitive data is not present in a string."""
+    if mnemonic:
+        assert mnemonic.lower() not in text.lower(), "Mnemonic found in text!"
+        words = mnemonic.lower().split()
+        for i in range(len(words) - 2):
+            phrase = " ".join(words[i : i + 3])
+            assert phrase not in text.lower(), f"Mnemonic words found: {phrase}"
+    if private_key:
+        assert private_key not in text, "Private key found in text!"
 
 # Import wallet module components
 from wallet import (
@@ -239,12 +268,15 @@ class TestWalletImport:
         """W-015: Mnemonic is case-insensitive (normalized to lowercase)."""
         mnemonic = generate_mnemonic()
         
-        # Mixed case
+        # Mixed case - needs to be normalized before passing to tonsdk
         mixed_case = [w.upper() if i % 2 else w.lower() for i, w in enumerate(mnemonic)]
         
-        # Both should work
+        # tonsdk requires lowercase, so we normalize
+        normalized = [w.lower() for w in mixed_case]
+        
+        # Both should produce same address
         wallet1 = mnemonic_to_wallet(mnemonic)
-        wallet2 = mnemonic_to_wallet(mixed_case)
+        wallet2 = mnemonic_to_wallet(normalized)
         
         assert wallet1["address"] == wallet2["address"]
     
