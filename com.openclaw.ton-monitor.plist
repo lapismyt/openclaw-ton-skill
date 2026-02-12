@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.openclaw.ton-monitor</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/micronova/.openclaw/workspace/openclaw-ton-skill/scripts/monitor.py</string>
+        <string>start</string>
+    </array>
+    
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- Password должен быть в keychain или env файле -->
+        <!-- Используем WALLET_PASSWORD из env файла -->
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    
+    <key>RunAtLoad</key>
+    <true/>
+    
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    
+    <key>StandardOutPath</key>
+    <string>/Users/micronova/Library/Logs/ton-monitor.log</string>
+    
+    <key>StandardErrorPath</key>
+    <string>/Users/micronova/Library/Logs/ton-monitor.log</string>
+    
+    <key>WorkingDirectory</key>
+    <string>/Users/micronova/.openclaw/workspace/openclaw-ton-skill</string>
+    
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    
+    <!-- Для безопасной передачи пароля: создать файл env -->
+    <!-- ~/.openclaw/ton-skill/monitor.env с WALLET_PASSWORD=xxx -->
+    <!-- И добавить: -->
+    <!--
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>WALLET_PASSWORD</key>
+        <string>YOUR_PASSWORD_HERE</string>
+    </dict>
+    -->
+</dict>
+</plist>

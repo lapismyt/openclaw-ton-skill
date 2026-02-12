@@ -387,4 +387,39 @@ Phase 0 (Infra)
 
 ---
 
+---
+
+## Phase 7: Мониторинг транзакций (Приоритет: ВЫСОКИЙ)
+
+**Цель:** Real-time мониторинг всех кошельков с алертами.
+
+| ID | Задача | Зависит от | Файл |
+|----|--------|------------|------|
+| 7.1 | TonAPI SSE streaming (real-time) | 0.6 | `monitor.py` |
+| 7.2 | Fallback polling (30-60 сек) | 0.6 | `monitor.py` |
+| 7.3 | Классификация событий (transfer/swap/nft/other) | 7.1 | `monitor.py` |
+| 7.4 | JSON события в stdout + лог-файл | 7.1 | `monitor.py` |
+| 7.5 | State persistence (last_seen event) | 7.1 | `monitor.py` |
+| 7.6 | CLI: start/stop/status/daemon mode | 7.1 | `monitor.py` |
+| 7.7 | LaunchAgent для автозапуска | 7.6 | `plist` |
+| 7.8 | Алерты: webhook/callback при событии | 7.3 | `monitor.py` |
+
+**CLI:**
+```bash
+monitor.py start -p <password>              # foreground
+monitor.py start -p <password> --daemon     # background
+monitor.py status                            # статус
+monitor.py stop                              # остановка
+```
+
+**Критерии готовности:**
+- [ ] SSE стрим работает для всех кошельков
+- [ ] Новые транзакции классифицируются (тип, сумма, от/кому)
+- [ ] LaunchAgent автозапуск
+- [ ] State сохраняется между перезапусками
+
+**Оценка:** 2 дня
+
+---
+
 *Обновлять этот план по мере прогресса.*

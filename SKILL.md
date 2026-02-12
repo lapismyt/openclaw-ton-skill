@@ -477,7 +477,107 @@ Exit codes: `0` = success, `1` = error
 
 ---
 
+## Transaction Monitor
+
+Script: `monitor.py`
+
+Real-time мониторинг транзакций кошельков через TonAPI SSE (Server-Sent Events) или polling fallback.
+
+### Start Monitor
+
+```bash
+# Foreground
+python monitor.py start -p <password>
+
+# Background (daemon)
+python monitor.py start -p <password> --daemon
+
+# Specific wallets only
+python monitor.py start -p <password> --wallet trading --wallet main
+
+# Force polling instead of SSE
+python monitor.py start -p <password> --polling
+```
+
+### Status
+
+```bash
+python monitor.py status
+```
+
+Output:
+```json
+{
+  "running": true,
+  "pid": 12345,
+  "started_at": "2026-02-13T02:15:00",
+  "wallets": ["trading", "main"],
+  "mode": "sse",
+  "last_seen": {...}
+}
+```
+
+### Stop Monitor
+
+```bash
+python monitor.py stop
+```
+
+### Event Format
+
+Stdout JSON (for agent parsing):
+```json
+{
+  "type": "incoming_transfer",
+  "wallet": "trading",
+  "address": "EQ...",
+  "amount": "5.0 TON",
+  "from": "EQ...",
+  "timestamp": "2026-02-13T02:12:00",
+  "tx_hash": "abc..."
+}
+```
+
+Event types:
+- `incoming_transfer` — Получение TON/jettons
+- `outgoing_transfer` — Отправка TON/jettons
+- `swap` — DEX swap
+- `nft_transfer` — Передача NFT
+- `other` — Прочие операции
+
+### LaunchAgent (Автозапуск)
+
+```bash
+# Установка с паролем
+WALLET_PASSWORD=xxx ./scripts/install-launchagent.sh
+
+# Запуск
+launchctl load ~/Library/LaunchAgents/com.openclaw.ton-monitor.plist
+
+# Остановка
+launchctl unload ~/Library/LaunchAgents/com.openclaw.ton-monitor.plist
+
+# Логи
+tail -f ~/Library/Logs/ton-monitor.log
+```
+
+### Storage
+
+- State: `~/.openclaw/ton-skill/monitor_state.json`
+- Logs: `~/.openclaw/ton-skill/monitor.log`
+- PID: `~/.openclaw/ton-skill/monitor.pid`
+
+### Dependencies
+
+```bash
+pip install sseclient-py  # For SSE mode (recommended)
+```
+
+---
+
 ## Storage Locations
 
 - Config: `~/.openclaw/ton-skill/config.json`
 - Wallets: `~/.openclaw/ton-skill/wallets.enc` (encrypted)
+- Monitor state: `~/.openclaw/ton-skill/monitor_state.json`
+- Monitor logs: `~/.openclaw/ton-skill/monitor.log`
