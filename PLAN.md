@@ -23,7 +23,7 @@ openclaw-ton-skill/
 │   ├── swap.py              # ✅ CLI: свапы через swap.coffee
 │   ├── analytics.py         # CLI: аналитика токенов (TODO)
 │   ├── yield_cmd.py         # CLI: yield/DeFi (TODO)
-│   ├── nft.py               # CLI: NFT операции (TODO)
+│   ├── nft.py               # ✅ CLI: NFT операции
 ├── references/              # Документация API
 └── tests/                   # Тесты
 ```
@@ -242,32 +242,37 @@ yield_cmd.py positions --wallet UQ...
 
 ---
 
-### Phase 5: NFT (Приоритет: НИЗКИЙ)
+### Phase 5: NFT (Приоритет: НИЗКИЙ) ✅
 
 **Цель:** Просмотр и операции с NFT.
 
 | ID | Задача | Зависит от | Файл |
 |----|--------|------------|------|
-| 5.1 | TonAPI: NFT в кошельке | 0.6 | `tonapi.py` |
-| 5.2 | TonAPI: информация о коллекции | 0.6 | `tonapi.py` |
-| 5.3 | Список NFT пользователя | 5.1 | `nft.py` |
-| 5.4 | Детали NFT | 5.2 | `nft.py` |
-| 5.5 | Трансфер NFT | 1.14, 5.1 | `nft.py` |
-| 5.6 | Floor price коллекции | 5.2 | `nft.py` |
+| 5.1 | TonAPI: NFT в кошельке | 0.6 | `nft.py` ✅ |
+| 5.2 | TonAPI: информация о коллекции | 0.6 | `nft.py` ✅ |
+| 5.3 | Список NFT пользователя | 5.1 | `nft.py` ✅ |
+| 5.4 | Детали NFT | 5.2 | `nft.py` ✅ |
+| 5.5 | Трансфер NFT | 1.14, 5.1 | `nft.py` ✅ |
+| 5.6 | Floor price коллекции | 5.2 | `nft.py` ✅ |
+| 5.7 | Поиск коллекций | — | `nft.py` ✅ |
 
 **CLI:**
 ```bash
 nft.py list --wallet UQ...
 nft.py info --address EQ...
-nft.py transfer --nft EQ... --from UQ... --to UQ...
+nft.py transfer --nft EQ... --from UQ... --to UQ... [--confirm]
 nft.py collection --address EQ...
+nft.py search --query "TON Diamonds"
 ```
 
 **Критерии готовности:**
-- [ ] Можно посмотреть NFT в кошельке
-- [ ] Можно передать NFT
+- [x] Можно посмотреть NFT в кошельке
+- [x] Можно получить детали NFT (метаданные, traits, владелец)
+- [x] Можно получить информацию о коллекции
+- [x] Можно передать NFT (с эмуляцией)
+- [x] Можно искать коллекции
 
-**Оценка:** 2 дня
+**Оценка:** 2 дня → **Выполнено: 2026-02-13**
 
 ---
 
