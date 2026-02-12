@@ -42,6 +42,7 @@ except ImportError:
 # =============================================================================
 
 SWAP_COFFEE_API = "https://backend.swap.coffee"
+SWAP_COFFEE_API_V1 = "https://backend.swap.coffee/v1"
 SWAP_COFFEE_API_V2 = "https://backend.swap.coffee/v2"
 
 # Известные токены (symbol -> master address)
@@ -72,7 +73,7 @@ def swap_coffee_request(
     method: str = "GET",
     params: Optional[dict] = None,
     json_data: Optional[dict] = None,
-    version: str = "v2",
+    version: str = "v1",
 ) -> dict:
     """
     Запрос к swap.coffee API.
@@ -87,12 +88,18 @@ def swap_coffee_request(
     Returns:
         dict с результатом
     """
-    base_url = SWAP_COFFEE_API_V2 if version == "v2" else SWAP_COFFEE_API
+    if version == "v2":
+        base_url = SWAP_COFFEE_API_V2
+    elif version == "v1":
+        base_url = SWAP_COFFEE_API_V1
+    else:
+        base_url = SWAP_COFFEE_API
+    
     api_key = get_swap_coffee_key()
 
-    headers = {}
+    headers = {"Content-Type": "application/json"}
     if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+        headers["X-Api-Key"] = api_key
 
     return api_request(
         url=f"{base_url}{endpoint}",
@@ -178,26 +185,30 @@ def get_swap_quote(
     input_addr = resolve_token_address(input_token)
     output_addr = resolve_token_address(output_token)
 
-    # Получаем decimals
+    # Получаем decimals для токенов (для отображения)
     input_info = get_token_info(input_addr)
     output_info = get_token_info(output_addr)
 
-    input_decimals = input_info.get("decimals", 9)
-    output_decimals = output_info.get("decimals", 9)
+    input_decimals = int(input_info.get("decimals", 9))
+    output_decimals = int(output_info.get("decimals", 9))
 
-    # Конвертируем в минимальные единицы
-    input_amount_raw = int(input_amount * (10**input_decimals))
+    # Формируем токены в формате swap.coffee API
+    # API ожидает: {"blockchain": "ton", "address": "native"} или {"blockchain": "ton", "address": "<jetton_address>"}
+    input_token_obj = {"blockchain": "ton", "address": input_addr}
+    output_token_obj = {"blockchain": "ton", "address": output_addr}
 
-    # Запрос к swap.coffee API
-    params = {
-        "input_token": input_addr,
-        "output_token": output_addr,
-        "input_amount": str(input_amount_raw),
-        "sender_address": sender_address,
-        "slippage": str(slippage / 100),  # API принимает как долю (0.005 = 0.5%)
+    # Запрос к swap.coffee API v1
+    # POST /v1/route с JSON body
+    # input_amount в токенах (не nano!), как float
+    request_body = {
+        "input_token": input_token_obj,
+        "output_token": output_token_obj,
+        "input_amount": input_amount,  # В токенах, не в nano!
+        "max_splits": 4,  # Для v4 кошельков
+        "max_length": 4,  # До 2 промежуточных токенов
     }
 
-    result = swap_coffee_request("/route", params=params)
+    result = swap_coffee_request("/route", method="POST", json_data=request_body, version="v1")
 
     if not result["success"]:
         return {
@@ -209,12 +220,21 @@ def get_swap_quote(
 
     data = result["data"]
 
-    # Парсим ответ
-    output_amount_raw = int(data.get("output_amount", 0))
-    output_amount = output_amount_raw / (10**output_decimals)
-
-    min_output_raw = int(data.get("min_output_amount", output_amount_raw))
-    min_output = min_output_raw / (10**output_decimals)
+    # Парсим ответ swap.coffee v1 API
+    # Ответ содержит: input_amount, output_amount (в токенах), paths, price_impact и т.д.
+    output_amount = float(data.get("output_amount", 0))
+    input_usd = float(data.get("input_usd", 0))
+    output_usd = float(data.get("output_usd", 0))
+    price_impact = data.get("price_impact", 0)
+    recommended_gas = data.get("recommended_gas", 0.15)
+    
+    # Конвертируем в raw для совместимости
+    input_amount_raw = int(input_amount * (10 ** input_decimals))
+    output_amount_raw = int(output_amount * (10 ** output_decimals))
+    
+    # Минимальный выход с учётом slippage
+    min_output = output_amount * (1 - slippage / 100)
+    min_output_raw = int(min_output * (10 ** output_decimals))
 
     # Вычисляем эффективную цену
     if input_amount > 0:
@@ -223,15 +243,17 @@ def get_swap_quote(
         price = 0
 
     # Маршрут
-    route = data.get("route", [])
+    paths = data.get("paths", [])
     route_info = []
-    for step in route:
+    for path in paths:
         route_info.append(
             {
-                "dex": step.get("dex_name", step.get("dex", "unknown")),
-                "pool": step.get("pool_address"),
-                "input": step.get("input_token"),
-                "output": step.get("output_token"),
+                "dex": path.get("dex", "unknown"),
+                "pool": path.get("pool_address"),
+                "input": path.get("input_token", {}).get("address", {}).get("address"),
+                "output": path.get("output_token", {}).get("address", {}).get("address"),
+                "input_amount": path.get("swap", {}).get("input_amount"),
+                "output_amount": path.get("swap", {}).get("output_amount"),
             }
         )
 
@@ -242,6 +264,7 @@ def get_swap_quote(
             "address": input_addr,
             "amount": input_amount,
             "amount_raw": input_amount_raw,
+            "usd": input_usd,
         },
         "output_token": {
             "symbol": output_info.get("symbol"),
@@ -250,14 +273,15 @@ def get_swap_quote(
             "amount_raw": output_amount_raw,
             "min_amount": min_output,
             "min_amount_raw": min_output_raw,
+            "usd": output_usd,
         },
         "price": price,
-        "price_impact": data.get("price_impact"),
+        "price_impact": price_impact,
         "slippage": slippage,
         "route": route_info,
         "route_count": len(route_info),
-        "fees": data.get("fees", {}),
-        "gas_estimate": data.get("gas_estimate"),
+        "recommended_gas": recommended_gas,
+        "savings_usd": data.get("savings", 0),
         "raw_response": data,
     }
 

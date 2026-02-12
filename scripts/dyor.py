@@ -167,15 +167,81 @@ def get_token_info_dyor(token_address: str) -> dict:
     }
 
 
+def get_token_rates_tonapi(token_address: str) -> dict:
+    """
+    Получает курс токена через TonAPI /rates endpoint.
+    
+    Args:
+        token_address: Адрес токена или "TON" для нативного токена
+    
+    Returns:
+        dict с ценой и изменениями
+    """
+    # TonAPI /rates принимает адреса токенов
+    # Для TON используем специальный адрес
+    if token_address == "native":
+        token_param = "TON"
+    else:
+        token_param = token_address
+    
+    result = tonapi_request(
+        "/rates",
+        params={
+            "tokens": token_param,
+            "currencies": "usd"
+        }
+    )
+    
+    if not result["success"]:
+        return {"success": False, "error": result.get("error")}
+    
+    data = result["data"]
+    rates = data.get("rates", {})
+    
+    # TonAPI возвращает rates по адресу токена
+    token_rates = rates.get(token_param) or rates.get(token_address) or {}
+    
+    if not token_rates:
+        return {"success": False, "error": "No rates found for token"}
+    
+    prices = token_rates.get("prices", {})
+    diff_24h = token_rates.get("diff_24h", {})
+    diff_7d = token_rates.get("diff_7d", {})
+    diff_30d = token_rates.get("diff_30d", {})
+    
+    # Парсим процент изменения (приходит как "+4.63%" или "-2.10%")
+    def parse_diff(diff_str):
+        if not diff_str:
+            return None
+        try:
+            return float(diff_str.replace("%", "").replace("+", ""))
+        except:
+            return None
+    
+    return {
+        "success": True,
+        "price_usd": prices.get("USD"),
+        "price_change_24h": parse_diff(diff_24h.get("USD")),
+        "price_change_7d": parse_diff(diff_7d.get("USD")),
+        "price_change_30d": parse_diff(diff_30d.get("USD")),
+    }
+
+
 def get_token_info_tonapi(token_address: str) -> dict:
     """
     Получает информацию о токене через TonAPI (fallback).
+    Включает цены из /rates endpoint.
 
     Returns:
         dict с базовой информацией о токене
     """
+    # Получаем цены отдельно через /rates
+    rates = get_token_rates_tonapi(token_address)
+    price_usd = rates.get("price_usd") if rates.get("success") else None
+    price_change_24h = rates.get("price_change_24h") if rates.get("success") else None
+    
     if token_address == "native":
-        # Для TON возвращаем захардкоженные данные
+        # Для TON возвращаем захардкоженные данные + цены
         return {
             "success": True,
             "source": "tonapi",
@@ -184,6 +250,8 @@ def get_token_info_tonapi(token_address: str) -> dict:
             "symbol": "TON",
             "decimals": 9,
             "image": "https://ton.org/download/ton_symbol.png",
+            "price_usd": price_usd,
+            "price_change_24h": price_change_24h,
         }
 
     result = tonapi_request(f"/jettons/{token_address}")
@@ -203,6 +271,8 @@ def get_token_info_tonapi(token_address: str) -> dict:
         "decimals": int(metadata.get("decimals", 9)),
         "image": metadata.get("image"),
         "description": metadata.get("description"),
+        "price_usd": price_usd,
+        "price_change_24h": price_change_24h,
         "total_supply": data.get("total_supply"),
         "holders_count": data.get("holders_count"),
         "verification": data.get("verification"),
