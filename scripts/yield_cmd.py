@@ -76,6 +76,48 @@ RISK_PROFILES = {
 # Stable tokens
 STABLE_TOKENS = ["USDT", "USDC", "DAI", "TUSD", "jUSDT", "jUSDC"]
 
+# Protocol → yieldTypeResolver mapping (discovered via API testing)
+PROTOCOL_TYPE_MAP = {
+    # Liquid staking protocols
+    "tonstakers": "liquid_staking",
+    "stakee": "liquid_staking",
+    "bemo": "liquid_staking",
+    "bemo_v2": "liquid_staking",
+    "hipo": "liquid_staking",
+    "kton": "liquid_staking",
+    
+    # Standard DEX pools (AMM)
+    "stonfi": "dex_pool",
+    "stonfi_v2": "dex_pool",
+    "dedust": "dex_pool",
+    "coffee": "dex_pool",
+    
+    # Concentrated liquidity (CLMM)
+    "tonco": "dex_pool_clmm",
+    
+    # Dynamic liquidity (DLMM)
+    "bidask": "dex_pool_dlmm",
+    
+    # Lending protocols
+    "evaa": "lending",
+    "dao_lama_vault": "farmix_lending_pool",
+    
+    # Other (perpetual, not fully supported)
+    "storm_trade": "perpetual_vault_pool",
+    "torch_finance": None,  # Not supported yet
+}
+
+# yieldTypeResolver → (deposit_discriminator, withdraw_discriminator)
+YIELD_TYPE_OPERATIONS = {
+    "liquid_staking": ("liquid_staking_stake", "liquid_staking_unstake"),
+    "dex_pool": ("dex_provide_liquidity", "dex_withdraw_liquidity"),
+    "dex_pool_clmm": ("dex_clmm_provide_liquidity", "dex_clmm_withdraw_liquidity"),
+    "dex_pool_dlmm": ("dex_dlmm_provide_liquidity", "dex_dlmm_withdraw_liquidity"),
+    "lending": ("lending_deposit", "lending_withdraw"),
+    "farmix_lending_pool": ("lending_deposit", "lending_withdraw"),  # Same as lending
+    "perpetual_vault_pool": (None, None),  # Not yet supported for interactions
+}
+
 # Cache settings
 CACHE_FILE = Path.home() / ".openclaw" / "ton-skill" / "yield_pools_cache.json"
 CACHE_TTL_SECONDS = 300  # 5 minutes
@@ -728,6 +770,170 @@ def get_positions(wallet: str) -> dict:
 
 
 # =============================================================================
+# Auto-detection & Unified Operations
+# =============================================================================
+
+
+def detect_pool_type(pool_address: str, user_address: str) -> dict:
+    """
+    Detects pool type by querying the API and checking yieldTypeResolver.
+    
+    Returns:
+        dict with pool_type, deposit_op, withdraw_op, or error
+    """
+    pool_safe = _make_url_safe(pool_address)
+    user_safe = _make_url_safe(user_address)
+    
+    result = swap_coffee_request(f"/yield/pool/{pool_safe}/{user_safe}")
+    
+    if not result["success"]:
+        return {
+            "success": False,
+            "error": result.get("error", "Failed to detect pool type"),
+        }
+    
+    pool_data = result["data"].get("pool", {})
+    yield_type = pool_data.get("yieldTypeResolver", "unknown")
+    
+    if yield_type not in YIELD_TYPE_OPERATIONS:
+        return {
+            "success": False,
+            "error": f"Unknown pool type: {yield_type}",
+            "yield_type": yield_type,
+        }
+    
+    deposit_op, withdraw_op = YIELD_TYPE_OPERATIONS[yield_type]
+    
+    if deposit_op is None:
+        return {
+            "success": False,
+            "error": f"Pool type '{yield_type}' does not support deposit/withdraw via API",
+            "yield_type": yield_type,
+        }
+    
+    return {
+        "success": True,
+        "yield_type": yield_type,
+        "deposit_op": deposit_op,
+        "withdraw_op": withdraw_op,
+        "pool_data": pool_data,
+    }
+
+
+def interact(
+    pool_address: str,
+    user_address: str,
+    operation: str,  # "deposit" or "withdraw"
+    amount: Optional[str] = None,
+    asset_1_amount: Optional[str] = None,
+    asset_2_amount: Optional[str] = None,
+    lp_amount: Optional[str] = None,
+    **kwargs,
+) -> dict:
+    """
+    Universal interact function that auto-detects pool type and builds transactions.
+    
+    Args:
+        pool_address: Pool address
+        user_address: User wallet address
+        operation: "deposit" or "withdraw"
+        amount: For liquid_staking and lending (single asset)
+        asset_1_amount: For DEX pools (first token)
+        asset_2_amount: For DEX pools (second token)
+        lp_amount: For DEX withdraw (LP tokens to burn)
+        **kwargs: Additional protocol-specific params
+    
+    Returns:
+        dict with transactions or error
+    """
+    # Detect pool type
+    detect_result = detect_pool_type(pool_address, user_address)
+    if not detect_result["success"]:
+        return detect_result
+    
+    yield_type = detect_result["yield_type"]
+    
+    if operation == "deposit":
+        discriminator = detect_result["deposit_op"]
+    elif operation == "withdraw":
+        discriminator = detect_result["withdraw_op"]
+    else:
+        return {"success": False, "error": f"Invalid operation: {operation}"}
+    
+    # Build request_data based on pool type
+    request_data = {"yieldTypeResolver": discriminator}
+    
+    if yield_type in ("liquid_staking", "lending", "farmix_lending_pool"):
+        # Single amount operations
+        if not amount:
+            return {"success": False, "error": "amount is required for this pool type"}
+        request_data["amount"] = str(amount)
+        
+    elif yield_type == "dex_pool":
+        if operation == "deposit":
+            if not asset_1_amount or not asset_2_amount:
+                return {"success": False, "error": "asset_1_amount and asset_2_amount required for DEX deposit"}
+            request_data["user_wallet"] = user_address
+            request_data["asset_1_amount"] = str(asset_1_amount)
+            request_data["asset_2_amount"] = str(asset_2_amount)
+            if kwargs.get("min_lp_amount"):
+                request_data["min_lp_amount"] = str(kwargs["min_lp_amount"])
+        else:  # withdraw
+            if not lp_amount:
+                return {"success": False, "error": "lp_amount required for DEX withdraw"}
+            request_data["lp_amount"] = str(lp_amount)
+            request_data["user_address"] = user_address
+            
+    elif yield_type == "dex_pool_clmm":
+        # CLMM requires more params - not fully implemented yet
+        return {
+            "success": False,
+            "error": "CLMM pools require additional parameters (tick_lower, tick_upper, position_id). Use direct API.",
+            "yield_type": yield_type,
+        }
+        
+    elif yield_type == "dex_pool_dlmm":
+        # DLMM requires specific params
+        return {
+            "success": False, 
+            "error": "DLMM pools require additional parameters (shape_type, bins). Use direct API.",
+            "yield_type": yield_type,
+        }
+    
+    # Make request
+    pool_safe = _make_url_safe(pool_address)
+    user_safe = _make_url_safe(user_address)
+    url = f"/yield/pool/{pool_safe}/{user_safe}"
+    
+    body = {"request_data": request_data}
+    result = swap_coffee_request(url, method="POST", json_data=body)
+    
+    if result["success"]:
+        transactions = result["data"]
+        return {
+            "success": True,
+            "operation": operation,
+            "yield_type": yield_type,
+            "discriminator": discriminator,
+            "pool_address": pool_address,
+            "user_address": user_address,
+            "transactions_count": len(transactions) if isinstance(transactions, list) else 1,
+            "transactions": transactions,
+            "note": f"Send these transactions via TonConnect to complete {operation}",
+        }
+    
+    error = result.get("error", "Unknown error")
+    error_msg = error.get("error", str(error)) if isinstance(error, dict) else str(error)
+    
+    return {
+        "success": False,
+        "error": error_msg,
+        "yield_type": yield_type,
+        "status_code": result.get("status_code"),
+    }
+
+
+# =============================================================================
 # Deposit / Withdraw via swap.coffee API
 # =============================================================================
 
@@ -1175,14 +1381,24 @@ Examples:
   %(prog)s lend-deposit --pool EQC8r... --wallet EQAT... --amount 1000000000
   %(prog)s lend-withdraw --pool EQC8r... --wallet EQAT... --amount 1000000000
   
+  # Auto-detect pool type and interact
+  %(prog)s detect --pool EQCkW... --wallet EQAT...
+  %(prog)s interact --pool EQCkW... --wallet EQAT... --op deposit --amount 1e9
+  %(prog)s interact --pool EQA-X... --wallet EQAT... --op deposit --amount1 1e9 --amount2 1e9
+  %(prog)s interact --pool EQA-X... --wallet EQAT... --op withdraw --lp-amount 1e9
+  
   # Check position & status
   %(prog)s user-info --pool EQA-X... --wallet EQAT...
   %(prog)s tx-status --query-id 1697643564986267
 
-Protocol support:
-  DEX (deposit/withdraw):      stonfi_v2, dedust, tonco
-  Liquid staking (stake/unstake): tonstakers, bemo, bemo_v2, hipo, kton, stakee
-  Lending (lend-deposit/withdraw): evaa
+Protocol → Pool Type:
+  liquid_staking:    tonstakers, stakee, bemo, bemo_v2, hipo, kton
+  dex_pool:          stonfi, stonfi_v2, dedust, coffee
+  dex_pool_clmm:     tonco
+  dex_pool_dlmm:     bidask
+  lending:           evaa
+  farmix_lending:    dao_lama_vault
+  not_supported:     storm_trade (perpetual), torch_finance
 """,
     )
 
@@ -1256,6 +1472,21 @@ Protocol support:
     lend_with_p.add_argument("--pool", "-p", required=True, help="Pool address")
     lend_with_p.add_argument("--wallet", "-w", required=True, help="User wallet address")
     lend_with_p.add_argument("--amount", "-a", required=True, help="Amount to withdraw (min units)")
+    
+    # --- detect (auto-detect pool type) ---
+    detect_p = subparsers.add_parser("detect", help="Auto-detect pool type and available operations")
+    detect_p.add_argument("--pool", "-p", required=True, help="Pool address")
+    detect_p.add_argument("--wallet", "-w", required=True, help="User wallet address")
+    
+    # --- interact (unified deposit/withdraw) ---
+    inter_p = subparsers.add_parser("interact", help="Auto-detect pool type and deposit/withdraw")
+    inter_p.add_argument("--pool", "-p", required=True, help="Pool address")
+    inter_p.add_argument("--wallet", "-w", required=True, help="User wallet address")
+    inter_p.add_argument("--op", required=True, choices=["deposit", "withdraw"], help="Operation")
+    inter_p.add_argument("--amount", "-a", help="Amount (for liquid_staking/lending)")
+    inter_p.add_argument("--amount1", help="First token amount (for DEX)")
+    inter_p.add_argument("--amount2", help="Second token amount (for DEX)")
+    inter_p.add_argument("--lp-amount", help="LP tokens to burn (for DEX withdraw)")
     
     # --- user-info ---
     uinfo_p = subparsers.add_parser("user-info", help="Get user position in pool")
@@ -1349,6 +1580,23 @@ Protocol support:
                 pool_address=args.pool,
                 user_address=args.wallet,
                 amount=args.amount,
+            )
+        
+        elif args.command == "detect":
+            result = detect_pool_type(
+                pool_address=args.pool,
+                user_address=args.wallet,
+            )
+        
+        elif args.command == "interact":
+            result = interact(
+                pool_address=args.pool,
+                user_address=args.wallet,
+                operation=args.op,
+                amount=args.amount,
+                asset_1_amount=args.amount1,
+                asset_2_amount=args.amount2,
+                lp_amount=getattr(args, "lp_amount", None),
             )
         
         elif args.command == "user-info":
