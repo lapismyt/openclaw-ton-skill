@@ -674,12 +674,7 @@ def main():
     cap_parser = subparsers.add_parser(
         "capabilities", help="Print a compact capabilities matrix for this skill"
     )
-    cap_parser.add_argument(
-        "--format",
-        choices=["json"],
-        default="json",
-        help="Output format (currently only json)",
-    )
+    # Output is JSON (stable machine-readable format)
 
     # --- address ---
     addr_parser = subparsers.add_parser("address", help="Address formatting")
@@ -776,13 +771,25 @@ def main():
                     "area": "yield/defi",
                     "read_only": True,
                     "writes_on_chain": False,
-                    "requires": ["swap_coffee_key (optional)"] ,
+                    "requires": ["swap_coffee_key (optional)"],
+                },
+                {
+                    "area": "analytics",
+                    "read_only": True,
+                    "writes_on_chain": False,
+                    "requires": ["dyor_key (optional)", "tonapi_key (recommended)"],
+                },
+                {
+                    "area": "staking",
+                    "read_only": False,
+                    "writes_on_chain": True,
+                    "requires": ["WALLET_PASSWORD", "tonapi_key (recommended)"],
                 },
                 {
                     "area": "nft",
                     "read_only": True,
                     "writes_on_chain": True,
-                    "requires": ["marketapp_key (for trading)", "WALLET_PASSWORD (for transfers/trades)"] ,
+                    "requires": ["marketapp_key (for trading)", "WALLET_PASSWORD (for transfers/trades)"],
                 },
                 {
                     "area": "dns (.ton)",
