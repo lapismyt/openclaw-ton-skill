@@ -236,6 +236,73 @@ python dns.py check UQBvW8Z5...
 
 ---
 
+## Tokens API (swap.coffee)
+
+Script: `tokens.py`
+
+Rich token data from swap.coffee Tokens API: market stats, price charts, holders, search.
+
+### List Jettons
+
+```bash
+python tokens.py list --search USDT --size 10
+python tokens.py list --verification WHITELISTED,COMMUNITY
+python tokens.py list --page 2 --size 50
+```
+
+### Get Jetton Info (with Market Stats)
+
+```bash
+python tokens.py info EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs
+```
+
+Returns: price_usd, price_change (5m/1h/6h/24h/7d), volume_24h, tvl, mcap, fdmc, holders_count, trust_score.
+
+### Price Chart
+
+```bash
+python tokens.py price-chart EQCxE6... --hours 24
+python tokens.py price-chart EQCxE6... --from "2024-01-01T00:00:00Z" --to "2024-01-02T00:00:00Z"
+python tokens.py price-chart EQCxE6... --currency ton
+```
+
+### Top Holders
+
+```bash
+python tokens.py holders EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs
+```
+
+### Hybrid Search (with Memepad)
+
+```bash
+python tokens.py search --query pepe --kind MEMES_ALL
+python tokens.py search --query NOT --sort VOLUME_24H
+python tokens.py search --kind MEMES_MEMEPADS --sort TVL
+```
+
+Kinds: `ALL`, `DEXES`, `MEMES_ALL`, `MEMES_DEXES`, `MEMES_MEMEPADS`
+Sort: `FDMC`, `TVL`, `MCAP`, `VOLUME_24H`, `PRICE_CHANGE_24H`
+
+### Account Jetton Balances
+
+```bash
+python tokens.py balances UQBvW8Z5huBkMJYdnfAEM5JqTNkgxvhw...
+```
+
+### Bulk Fetch
+
+```bash
+python tokens.py bulk EQCxE6... EQBlqs... EQAvlW...
+```
+
+### Labels
+
+```bash
+python tokens.py labels
+```
+
+---
+
 ## Token Analytics
 
 Script: `analytics.py`
@@ -290,21 +357,39 @@ python analytics.py status   # Check DYOR/TonAPI availability
 
 Script: `yield_cmd.py`
 
+**swap.coffee yield API aggregates 2000 pools from 16 protocols:**
+stonfi, stonfi_v2, dedust, tonco, evaa, tonstakers, stakee, bemo,
+bemo_v2, hipo, kton, storm_trade, torch_finance, dao_lama_vault, bidask, coffee
+
 ### List Pools
 
 ```bash
-python yield_cmd.py pools --sort apy
-python yield_cmd.py pools --sort tvl --min-tvl 1000000
-python yield_cmd.py pools --token TON --limit 10
+python yield_cmd.py pools --sort apr
+python yield_cmd.py pools --sort tvl --limit 50
+python yield_cmd.py pools --page 2 --limit 100   # pagination
+python yield_cmd.py pools --all                   # all 2000 pools
+
+# Client-side filters (auto-fetches all pools, cached 5 min)
+python yield_cmd.py pools --protocol stonfi
+python yield_cmd.py pools --token TON
+python yield_cmd.py pools --min-tvl 1000000
+python yield_cmd.py pools --trusted-only
+python yield_cmd.py pools --protocol dedust --token USDT --min-tvl 100000
 ```
 
-Sort options: `apy`, `tvl`, `volume`
+Sort: `apr`, `tvl`, `volume`
+Pagination: `--page N` (1-indexed), max 100 per page
+Cache: `python yield_cmd.py cache --status` / `--clear`
+
+**Note:** Server-side filters don't work — all filtering is client-side.
 
 ### Pool Details
 
 ```bash
 python yield_cmd.py pool --id EQD...abc
 ```
+
+Returns: TVL (USD), volume, fees, APR, LP APR, boost APR, tokens, protocol.
 
 ### Recommendations
 
@@ -319,28 +404,26 @@ Risk levels:
 - `medium` — TVL ≥100K, moderate IL
 - `high` — TVL ≥10K, any pairs
 
-### Deposit Liquidity
-
-```bash
-# Emulate
-python yield_cmd.py deposit --pool EQD...abc --amount 100 --wallet trading
-
-# Execute
-python yield_cmd.py deposit --pool EQD...abc --amount 100 --wallet trading --confirm
-```
-
-### Withdraw Liquidity
-
-```bash
-python yield_cmd.py withdraw --pool EQD...abc --wallet trading --confirm
-python yield_cmd.py withdraw --pool EQD...abc --wallet trading --percentage 50 --confirm
-```
-
 ### View Positions
 
 ```bash
-python yield_cmd.py positions --wallet trading
+python yield_cmd.py positions --wallet EQD...xyz
 ```
+
+Detects LP tokens in wallet via TonAPI (heuristic by name).
+
+### List Protocols
+
+```bash
+python yield_cmd.py protocols
+```
+
+### Deposit / Withdraw (Not Supported via API)
+
+⚠️ **swap.coffee yield API is a read-only aggregator.**
+
+Deposit and withdraw operations require direct interaction with DEX smart contracts
+(STON.fi, DeDust, TONCO, etc.). Use DEX-specific SDKs or swap.py for liquidity operations.
 
 ---
 
@@ -454,8 +537,36 @@ python utils.py address validate UQBvW8Z5huBk...
 
 1. Build transaction
 2. Emulate via TonAPI (show fee, result)
-3. **User confirms**
-4. Sign and broadcast
+3. **Show confirmation with inline buttons** (see below)
+4. User clicks ✅ or ❌
+5. Sign and broadcast (or cancel)
+
+### Confirmation with Inline Buttons
+
+When a transaction requires confirmation (transfer, swap, deposit, withdraw, NFT buy/sell),
+**always send the confirmation message with inline buttons** using the `message` tool:
+
+```
+message action=send buttons=[[{"text":"✅ Подтвердить","callback_data":"ton_tx_confirm"},{"text":"❌ Отменить","callback_data":"ton_tx_cancel"}]]
+```
+
+The message should include:
+- Transaction type (transfer/swap/deposit/etc.)
+- Amount and destination
+- Estimated fee from emulation
+- Any warnings (large amount, unverified token, etc.)
+
+Example confirmation message:
+```
+🔄 Свап 3.7 TON → ~5.09 USDT
+📍 DEX: Moon (swap.coffee)
+💰 Fee: ~0.15 TON
+⚠️ Slippage: 1%
+```
+
+When user clicks:
+- `ton_tx_confirm` → execute with `--confirm`, report result
+- `ton_tx_cancel` → reply "Отменено ✅", do NOT execute
 
 ### Limits
 
