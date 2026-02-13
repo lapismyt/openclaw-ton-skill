@@ -187,6 +187,14 @@ python utils.py config set marketapp_key "YOUR_MARKETAPP_KEY"
 
 Set `WALLET_PASSWORD` environment variable or use `--password` flag for wallet operations.
 
+### Capability Discovery
+
+Print a compact capabilities matrix (useful for operators/agents):
+
+```bash
+python utils.py capabilities
+```
+
 ---
 
 ## 🚀 Quick Start
