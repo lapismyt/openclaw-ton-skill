@@ -199,6 +199,8 @@ python utils.py capabilities
 
 ## 🚀 Quick Start
 
+If you only have 5 minutes, start here: **[docs/FIRST-5-MINUTES.md](docs/FIRST-5-MINUTES.md)**
+
 ### 1. Create a Wallet
 
 ```bash
