@@ -173,6 +173,13 @@ def get_token_info(token_address: str) -> dict:
 # =============================================================================
 
 
+def _normalize_symbol(symbol: str) -> str:
+    """Нормализует символ жетона (USD₮ → USDT, ₿TC → BTC)."""
+    if not symbol:
+        return symbol
+    return symbol.replace("₮", "T").replace("₿", "B").replace("₴", "S")
+
+
 def get_swap_quote(
     input_token: str,
     output_token: str,
@@ -193,6 +200,16 @@ def get_swap_quote(
     Returns:
         dict с котировкой (маршрут, ожидаемый выход, комиссии)
     """
+    # Валидация входных параметров
+    if not input_token or not input_token.strip():
+        return {"success": False, "error": "Input token is required"}
+    if not output_token or not output_token.strip():
+        return {"success": False, "error": "Output token is required"}
+    if input_amount is None or input_amount <= 0:
+        return {"success": False, "error": "Amount must be positive"}
+    if slippage < 0 or slippage > 100:
+        return {"success": False, "error": "Slippage must be between 0 and 100%"}
+
     # Резолвим токены
     input_addr = resolve_token_address(input_token)
     output_addr = resolve_token_address(output_token)
@@ -272,14 +289,14 @@ def get_swap_quote(
     return {
         "success": True,
         "input_token": {
-            "symbol": input_info.get("symbol"),
+            "symbol": _normalize_symbol(input_info.get("symbol")),
             "address": input_addr,
             "amount": input_amount,
             "amount_raw": input_amount_raw,
             "usd": input_usd,
         },
         "output_token": {
-            "symbol": output_info.get("symbol"),
+            "symbol": _normalize_symbol(output_info.get("symbol")),
             "address": output_addr,
             "amount": output_amount,
             "amount_raw": output_amount_raw,
@@ -500,6 +517,16 @@ def execute_swap(
     if not TONSDK_AVAILABLE:
         return {"success": False, "error": "tonsdk not installed"}
 
+    # Валидация входных параметров
+    if not input_token or not input_token.strip():
+        return {"success": False, "error": "Input token is required"}
+    if not output_token or not output_token.strip():
+        return {"success": False, "error": "Output token is required"}
+    if input_amount is None or input_amount <= 0:
+        return {"success": False, "error": "Amount must be positive"}
+    if slippage < 0 or slippage > 100:
+        return {"success": False, "error": "Slippage must be between 0 and 100%"}
+
     # 1. Получаем кошелёк
     wallet_data = get_wallet_from_storage(from_wallet, password)
     if not wallet_data:
@@ -625,20 +652,42 @@ def execute_swap(
     if confirm:
         sent_count = 0
         errors = []
+        tx_hashes = []
 
         for tx in signed_txs:
             send_result = send_transaction(tx["boc"])
             if send_result["success"]:
                 sent_count += 1
+                # Try to extract tx hash from response
+                raw_resp = send_result.get("raw_response", {})
+                if isinstance(raw_resp, dict):
+                    tx_hash = raw_resp.get("hash") or raw_resp.get("message_hash")
+                    if tx_hash:
+                        tx_hashes.append(tx_hash)
             else:
                 errors.append(send_result.get("error"))
 
         result["sent_count"] = sent_count
         result["total_transactions"] = len(signed_txs)
+        result["tx_hashes"] = tx_hashes
 
         if sent_count == len(signed_txs):
             result["success"] = True
             result["message"] = "Swap executed successfully"
+
+            # Wait for completion if requested
+            if wait_for_completion and tx_hashes:
+                result["waiting_for_completion"] = True
+                completion_result = wait_for_swap_completion(
+                    tx_hashes, max_wait_seconds=60, verbose=False
+                )
+                result["completion"] = completion_result
+
+                if completion_result.get("success"):
+                    result["message"] = f"Swap completed! {completion_result['completed']}/{completion_result['total']} transactions confirmed"
+                else:
+                    result["message"] = f"Swap sent but verification incomplete: {completion_result.get('failed', 0)} failed, {completion_result.get('timed_out', 0)} timed out"
+
         elif sent_count > 0:
             result["success"] = True
             result["message"] = (
@@ -720,10 +769,24 @@ Examples:
   # Свап с указанием slippage
   %(prog)s execute --wallet main --from USDT --to TON --amount 100 --slippage 1.0 --confirm
   
-  # Проверить статус
+  # Свап с ожиданием подтверждения
+  %(prog)s execute --wallet main --from TON --to USDT --amount 5 --confirm --wait
+  
+  # Свап с реферальной комиссией
+  %(prog)s execute --wallet main --from TON --to USDT --amount 10 --confirm \\
+      --referral UQBvW8Z5... --referral-fee 0.5
+  
+  # Проверить статус транзакции
   %(prog)s status --hash abc123...
+  
+  # Опросить статус до завершения (макс 60 сек)
+  %(prog)s poll --hash abc123... --timeout 60
+  
+  # Список известных токенов
+  %(prog)s tokens
 
-Known tokens: TON, USDT, USDC, NOT, STON, SCALE
+Known tokens: TON, USDT, USDC, NOT, STON, SCALE, DOGS, CATS, MAJOR, and more.
+Use token symbols or full jetton master addresses.
 """,
     )
 
@@ -781,6 +844,26 @@ Known tokens: TON, USDT, USDC, NOT, STON, SCALE
     exec_p.add_argument(
         "--confirm", action="store_true", help="Confirm and execute swap"
     )
+    exec_p.add_argument(
+        "--referral", "-r", dest="referral_address",
+        help="Referral address to receive swap fee (optional)"
+    )
+    exec_p.add_argument(
+        "--referral-fee", type=float, default=0.0,
+        help="Referral fee percent (0-1%%, default: 0)"
+    )
+    exec_p.add_argument(
+        "--wait", action="store_true",
+        help="Wait for transaction completion (with --confirm)"
+    )
+
+    # --- poll ---
+    poll_p = subparsers.add_parser("poll", help="Poll transaction status until completion")
+    poll_p.add_argument("--hash", "-x", required=True, help="Transaction hash")
+    poll_p.add_argument(
+        "--timeout", type=int, default=60,
+        help="Max wait time in seconds (default: 60)"
+    )
 
     # --- status ---
     status_p = subparsers.add_parser("status", help="Get swap/transaction status")
@@ -788,6 +871,46 @@ Known tokens: TON, USDT, USDC, NOT, STON, SCALE
 
     # --- tokens ---
     tokens_p = subparsers.add_parser("tokens", help="List known tokens")
+
+    # --- smart (smart routing) ---
+    smart_p = subparsers.add_parser("smart", help="Get optimized route via smart routing")
+    smart_p.add_argument(
+        "--from", "-f", dest="input_token", required=True, help="Input token"
+    )
+    smart_p.add_argument(
+        "--to", "-t", dest="output_token", required=True, help="Output token"
+    )
+    smart_p.add_argument(
+        "--amount", "-a", type=float, required=True, help="Input amount"
+    )
+    smart_p.add_argument(
+        "--wallet", "-w", required=True, help="Wallet address"
+    )
+    smart_p.add_argument(
+        "--slippage", "-s", type=float, default=0.5, help="Slippage %% (default: 0.5)"
+    )
+    smart_p.add_argument(
+        "--max-splits", type=int, default=4, help="Max route splits (default: 4)"
+    )
+    smart_p.add_argument(
+        "--max-length", type=int, default=4, help="Max swap chain length (default: 4)"
+    )
+
+    # --- multi (multi-swap) ---
+    multi_p = subparsers.add_parser("multi", help="Multi-swap: multiple swaps in one transaction")
+    multi_p.add_argument(
+        "--swaps", required=True,
+        help='JSON array of swaps: [{"input_token":"TON","output_token":"USDT","input_amount":10},...]'
+    )
+    multi_p.add_argument(
+        "--wallet", "-w", required=True, help="Wallet address"
+    )
+    multi_p.add_argument(
+        "--slippage", "-s", type=float, default=0.5, help="Slippage %% (default: 0.5)"
+    )
+    multi_p.add_argument(
+        "--build", action="store_true", help="Build transactions for signing"
+    )
 
     args = parser.parse_args()
 
@@ -844,10 +967,21 @@ Known tokens: TON, USDT, USDC, NOT, STON, SCALE
                 slippage=args.slippage,
                 password=password,
                 confirm=args.confirm,
+                referral_address=getattr(args, "referral_address", None),
+                referral_fee_percent=getattr(args, "referral_fee", 0.0),
+                wait_for_completion=getattr(args, "wait", False),
             )
 
         elif args.command == "status":
             result = get_swap_status(args.hash)
+
+        elif args.command == "poll":
+            max_polls = args.timeout // TX_STATUS_POLL_INTERVAL
+            result = poll_transaction_status(
+                args.hash,
+                max_polls=max_polls,
+                poll_interval=TX_STATUS_POLL_INTERVAL,
+            )
 
         elif args.command == "tokens":
             result = {

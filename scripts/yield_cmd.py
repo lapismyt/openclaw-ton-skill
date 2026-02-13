@@ -1412,6 +1412,177 @@ def lending_withdraw(
 
 
 # =============================================================================
+# Generic Yield Interact
+# =============================================================================
+
+
+def yield_interact(
+    pool_address: str,
+    user_address: str,
+    yield_type_resolver: str,
+    params: Optional[Dict] = None,
+) -> dict:
+    """
+    Универсальный эндпоинт для взаимодействия с yield протоколами.
+    
+    POST /v1/yield/interact
+    
+    Позволяет выполнять любые операции с yield через единый интерфейс.
+    
+    Поддерживаемые yieldTypeResolver:
+    - dex_provide_liquidity — депозит в DEX пул
+    - dex_withdraw_liquidity — вывод из DEX пула
+    - dex_stonfi_lock_staking — стейкинг LP в STON.fi farm
+    - dex_stonfi_withdraw_staking — вывод LP из STON.fi farm
+    - liquid_staking_stake — стейкинг в liquid staking
+    - liquid_staking_unstake — вывод из liquid staking
+    - lending_deposit — депозит в lending
+    - lending_withdraw — вывод из lending
+    
+    Args:
+        pool_address: Адрес пула/протокола
+        user_address: Адрес пользователя
+        yield_type_resolver: Тип операции (см. выше)
+        params: Дополнительные параметры операции
+    
+    Returns:
+        dict с транзакциями для подписания
+    
+    Examples:
+        # Deposit to DEX
+        yield_interact(pool, user, "dex_provide_liquidity", {
+            "asset_1_amount": "1000000000",
+            "asset_2_amount": "1000000000"
+        })
+        
+        # Stake to liquid staking
+        yield_interact(pool, user, "liquid_staking_stake", {
+            "amount": "1000000000"
+        })
+    """
+    if not is_valid_address(pool_address):
+        return {"success": False, "error": f"Invalid pool address: {pool_address}"}
+    if not is_valid_address(user_address):
+        return {"success": False, "error": f"Invalid user address: {user_address}"}
+    
+    # Формируем body запроса
+    request_data = {
+        "yieldTypeResolver": yield_type_resolver,
+        "user_wallet": user_address,
+    }
+    
+    # Добавляем дополнительные параметры
+    if params:
+        request_data.update(params)
+    
+    body = {
+        "pool_address": pool_address,
+        "user_address": user_address,
+        "request_data": request_data,
+    }
+    
+    result = swap_coffee_request("/yield/interact", method="POST", json_data=body)
+    
+    if result["success"]:
+        data = result["data"]
+        transactions = data if isinstance(data, list) else [data]
+        
+        # Извлекаем query_ids
+        query_ids = []
+        for tx in transactions:
+            if isinstance(tx, dict) and "query_id" in tx:
+                query_ids.append(tx["query_id"])
+        
+        return {
+            "success": True,
+            "operation": yield_type_resolver,
+            "pool_address": pool_address,
+            "user_address": user_address,
+            "params": params,
+            "query_ids": query_ids,
+            "transactions_count": len(transactions),
+            "transactions": transactions,
+            "note": "Send these transactions via TonConnect. Check status with: tx-status --query-id <id>",
+        }
+    
+    error = result.get("error", "Unknown error")
+    error_msg = error.get("error", str(error)) if isinstance(error, dict) else str(error)
+    
+    # Подсказки для частых ошибок
+    hints = {}
+    if "Unsupported" in str(error_msg):
+        hints["hint"] = "This pool/protocol may not support this operation type."
+    elif "Invalid" in str(error_msg):
+        hints["hint"] = "Check pool address and parameters format."
+    
+    return {
+        "success": False,
+        "error": error_msg,
+        "status_code": result.get("status_code"),
+        "operation": yield_type_resolver,
+        **hints,
+    }
+
+
+def get_yield_types() -> dict:
+    """
+    Возвращает список поддерживаемых yield операций.
+    
+    Returns:
+        dict со списком операций
+    """
+    yield_types = {
+        "dex_provide_liquidity": {
+            "description": "Deposit liquidity into DEX pool",
+            "protocols": ["stonfi_v2", "dedust", "tonco"],
+            "required_params": ["asset_1_amount", "asset_2_amount"],
+            "optional_params": ["min_lp_amount"],
+        },
+        "dex_withdraw_liquidity": {
+            "description": "Withdraw liquidity from DEX pool",
+            "protocols": ["stonfi_v2", "dedust", "tonco"],
+            "required_params": ["lp_amount"],
+        },
+        "dex_stonfi_lock_staking": {
+            "description": "Lock LP tokens in STON.fi farm",
+            "protocols": ["stonfi_v2"],
+            "required_params": ["lp_amount", "minter_address"],
+        },
+        "dex_stonfi_withdraw_staking": {
+            "description": "Withdraw LP tokens from STON.fi farm",
+            "protocols": ["stonfi_v2"],
+            "required_params": ["position_address"],
+        },
+        "liquid_staking_stake": {
+            "description": "Stake to liquid staking pool",
+            "protocols": ["tonstakers", "bemo", "bemo_v2", "hipo", "kton", "stakee"],
+            "required_params": ["amount"],
+        },
+        "liquid_staking_unstake": {
+            "description": "Unstake from liquid staking pool",
+            "protocols": ["tonstakers", "bemo", "bemo_v2", "hipo", "kton", "stakee"],
+            "required_params": ["amount"],
+        },
+        "lending_deposit": {
+            "description": "Deposit to lending protocol",
+            "protocols": ["evaa"],
+            "required_params": ["amount"],
+        },
+        "lending_withdraw": {
+            "description": "Withdraw from lending protocol",
+            "protocols": ["evaa"],
+            "required_params": ["amount"],
+        },
+    }
+    
+    return {
+        "success": True,
+        "yield_types_count": len(yield_types),
+        "yield_types": yield_types,
+    }
+
+
+# =============================================================================
 # CLI
 # =============================================================================
 
@@ -1573,6 +1744,17 @@ Operations by pool type:
     # --- providers ---
     subparsers.add_parser("providers", help="List supported providers")
 
+    # --- interact (generic yield interact) ---
+    int_p = subparsers.add_parser("interact", help="Generic yield interact endpoint")
+    int_p.add_argument("--pool", "-p", required=True, help="Pool address")
+    int_p.add_argument("--wallet", "-w", required=True, help="User wallet address")
+    int_p.add_argument("--type", "-t", required=True, dest="yield_type",
+        help="Yield type resolver (dex_provide_liquidity, liquid_staking_stake, etc.)")
+    int_p.add_argument("--params", help='JSON object with operation params: {"amount": "1000000000"}')
+
+    # --- yield-types ---
+    subparsers.add_parser("yield-types", help="List supported yield operation types")
+
     # --- cache ---
     cache_p = subparsers.add_parser("cache", help="Cache management")
     cache_p.add_argument("--clear", action="store_true", help="Clear pools cache")
@@ -1686,6 +1868,27 @@ Operations by pool type:
                 "count": len(SUPPORTED_PROVIDERS),
                 "providers": SUPPORTED_PROVIDERS,
             }
+
+        elif args.command == "interact":
+            # Парсим params если указаны
+            params = None
+            if hasattr(args, "params") and args.params:
+                try:
+                    params = json.loads(args.params)
+                except json.JSONDecodeError as e:
+                    result = {"success": False, "error": f"Invalid JSON in --params: {e}"}
+                    print(json.dumps(result, indent=2, ensure_ascii=False))
+                    sys.exit(1)
+
+            result = yield_interact(
+                pool_address=args.pool,
+                user_address=args.wallet,
+                yield_type_resolver=args.yield_type,
+                params=params,
+            )
+
+        elif args.command == "yield-types":
+            result = get_yield_types()
 
         elif args.command == "cache":
             if args.clear:
