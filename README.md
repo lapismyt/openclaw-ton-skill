@@ -102,6 +102,27 @@ A proof-of-concept for AI-driven open source development. The future is here. �
 - Background daemon mode
 - Multi-wallet monitoring
 
+### 📈 DCA & Limit Orders
+- Dollar Cost Averaging (DCA) orders
+- Limit orders with target price
+- Automated trading via proxy wallet
+- Order management (list, cancel)
+- Eligibility checks
+
+### 🥩 Staking
+- Multi-protocol staking (TonStakers, Stakee, Bemo, Hipo, Kton)
+- Stake/unstake operations
+- Position tracking
+- Staking points & rewards
+- APR comparison
+
+### 🎁 Profile & Rewards
+- Transaction history
+- Cashback info & claiming
+- Referral program (codes, aliases, rewards)
+- DEX statistics
+- Active contests & leaderboards
+
 ### 🛡️ Security
 - Transaction emulation before execution
 - Confirmation required for all writes
@@ -235,6 +256,48 @@ python swap.py execute --wallet main --from TON --to USDT --amount 5 --confirm
 python monitor.py start -p <password> --daemon
 ```
 
+### 11. Create DCA Order
+
+```bash
+# First, deploy proxy wallet (one-time)
+python strategies.py check --address UQBvW8...
+python strategies.py create-proxy --wallet main --confirm
+
+# Create DCA: buy USDT with 100 TON over 10 orders, every 24 hours
+python strategies.py create-dca --wallet main --from TON --to USDT --amount 100 --orders 10 --interval 24 --confirm
+```
+
+### 12. Create Limit Order
+
+```bash
+# Execute when TON price reaches 5.5 USDT
+python strategies.py create-limit --wallet main --from TON --to USDT --amount 10 --price 5.5 --confirm
+```
+
+### 13. Stake TON
+
+```bash
+# List staking pools
+python staking.py pools --sort apr
+
+# Stake 10 TON
+python staking.py stake --pool EQCkWx... --wallet main --amount 10 --confirm
+```
+
+### 14. Check Cashback & Rewards
+
+```bash
+python profile.py cashback-info --wallet EQAbc...
+python profile.py claim-available --wallet EQAbc...
+```
+
+### 15. View Active Contests
+
+```bash
+python profile.py contests-active
+python profile.py contest-leaderboard --id contest123
+```
+
 ---
 
 ## 🧪 Test Cases
@@ -284,14 +347,17 @@ pytest --cov=scripts --cov-report=term-missing
 | **swap.coffee Swap** | Route, Build, Status | ✅ Full |
 | **swap.coffee Tokens** | List, Info, Search, Holders, Charts | ✅ Full |
 | **swap.coffee Yield** | Pools, Protocols, Recommendations | ✅ Full (read-only) |
+| **swap.coffee Strategies** | DCA, Limit orders, Proxy wallet | ✅ Full |
+| **swap.coffee Profile** | History, Cashback, Claims, Referrals | ✅ Full |
+| **swap.coffee Staking** | Pools, Positions, Stake/Unstake | ✅ Full |
+| **swap.coffee Statistics** | DEX stats, Volume, Top tokens | ✅ Full |
+| **swap.coffee Contests** | Active, Leaderboard, User position | ✅ Full |
 | **TonAPI Accounts** | Balance, Jettons, NFTs, Transactions | ✅ Full |
 | **TonAPI Blockchain** | Send message, Emulate | ✅ Full |
 | **TonAPI DNS** | Resolve, Domain info | ✅ Full |
 | **TonAPI Staking** | Pool info, Nominators | ✅ Full |
 | **DYOR Analytics** | Token info, Trust score, History | ✅ Full |
 | **Marketapp NFT** | Collections, Buy, Sell, Gifts | ✅ Full |
-| **DCA Orders** | Create, List, Cancel | ❌ Not implemented |
-| **Limit Orders** | Create, List, Cancel | ❌ Not implemented |
 
 ---
 
@@ -299,7 +365,7 @@ pytest --cov=scripts --cov-report=term-missing
 
 1. **Yield deposit/withdraw not supported** — swap.coffee yield API is read-only; direct DEX interaction required for LP operations
 
-2. **DCA orders not implemented** — Scheduled purchases feature pending API support
+2. **Strategies require proxy wallet** — Before using DCA/limit orders, you must deploy a proxy wallet contract (one-time operation via `strategies.py create-proxy`)
 
 3. **Rate limiting** — Some APIs may rate-limit heavy usage; implement appropriate delays
 
@@ -344,12 +410,15 @@ ruff check scripts/
 
 ### Areas for Contribution
 
-- [ ] DCA order implementation
-- [ ] Limit order support
+- [x] DCA order implementation ✅
+- [x] Limit order support ✅
+- [x] Staking operations ✅
+- [x] Profile, cashback, referrals ✅
 - [ ] Additional DEX integrations
 - [ ] Multi-language support
 - [ ] Web dashboard
 - [ ] More test coverage
+- [ ] Yield deposit/withdraw via direct DEX contracts
 
 ---
 
