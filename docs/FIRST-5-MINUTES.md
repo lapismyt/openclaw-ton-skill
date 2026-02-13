@@ -74,10 +74,14 @@ Get a swap quote (example TON→USDT):
 python scripts/swap.py quote --from TON --to USDT --amount 1 --wallet <WALLET_ADDRESS>
 ```
 
-Execute a swap (read the help for flags like slippage):
+Execute a swap:
 
 ```bash
+# Default behavior is emulation unless you pass --confirm
 python scripts/swap.py -p "$WALLET_PASSWORD" execute --wallet main --from TON --to USDT --amount 1
+
+# Actually send on-chain:
+python scripts/swap.py -p "$WALLET_PASSWORD" execute --wallet main --from TON --to USDT --amount 1 --confirm
 ```
 
 ## Example prompts (OpenClaw / agent)
@@ -99,7 +103,7 @@ Use these as “user asks” in OpenClaw:
 | Balances | `wallet.py` | ✅ | ❌ | May require TonAPI for richer data |
 | Transfers | `transfer.py` | ❌ | ✅ | Supports `.ton` resolution |
 | Swaps | `swap.py` | ✅ (quote) | ✅ (execute) | Uses swap.coffee; emulation supported |
-| Yield | `yield_cmd.py` | ✅ | ⚠️ | Some operations may be read-only depending on config |
+| Yield/DeFi | `yield_cmd.py` | ✅ (browse/position) | ✅ (deposit/withdraw/stake/unstake) | Read-only listing is safe; deposit/withdraw/stake are on-chain writes |
 | NFTs | `nft.py` | ✅ | ✅ | Marketapp needed for trading |
 | Monitoring | `monitor.py` | ✅ | ❌ | SSE + daemon mode |
 
