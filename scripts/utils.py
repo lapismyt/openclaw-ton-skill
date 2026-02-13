@@ -670,6 +670,12 @@ def main():
 
     config_sub.add_parser("show", help="Show all config")
 
+    # --- capabilities ---
+    cap_parser = subparsers.add_parser(
+        "capabilities", help="Print a compact capabilities matrix for this skill"
+    )
+    # Output is JSON (stable machine-readable format)
+
     # --- address ---
     addr_parser = subparsers.add_parser("address", help="Address formatting")
     addr_sub = addr_parser.add_subparsers(dest="addr_cmd")
@@ -718,6 +724,91 @@ def main():
             result = load_config()
         else:
             result = {"error": "Unknown config command"}
+
+    elif args.command == "capabilities":
+        # Keep this intentionally compact and stable (useful for agents to self-describe).
+        result = {
+            "name": "ton-blockchain",
+            "scripts": {
+                "wallet": "scripts/wallet.py",
+                "transfer": "scripts/transfer.py",
+                "swap": "scripts/swap.py",
+                "tokens": "scripts/tokens.py",
+                "analytics": "scripts/analytics.py",
+                "yield": "scripts/yield_cmd.py",
+                "staking": "scripts/staking.py",
+                "nft": "scripts/nft.py",
+                "dns": "scripts/dns.py",
+                "monitor": "scripts/monitor.py",
+            },
+            "capabilities": [
+                {
+                    "area": "wallets",
+                    "read_only": False,
+                    "writes_on_chain": False,
+                    "requires": [],
+                    "notes": "Manages local encrypted wallet store; on-chain writes happen via transfer/swap/etc.",
+                },
+                {
+                    "area": "balances",
+                    "read_only": True,
+                    "writes_on_chain": False,
+                    "requires": ["tonapi_key (recommended)"],
+                },
+                {
+                    "area": "transfers (TON/jettons)",
+                    "read_only": False,
+                    "writes_on_chain": True,
+                    "requires": ["WALLET_PASSWORD"],
+                },
+                {
+                    "area": "swaps",
+                    "read_only": False,
+                    "writes_on_chain": True,
+                    "requires": ["WALLET_PASSWORD", "swap_coffee_key (optional)", "tonapi_key (recommended)"] ,
+                },
+                {
+                    "area": "yield/defi",
+                    "read_only": True,
+                    "writes_on_chain": False,
+                    "requires": ["swap_coffee_key (optional)"],
+                },
+                {
+                    "area": "analytics",
+                    "read_only": True,
+                    "writes_on_chain": False,
+                    "requires": ["dyor_key (optional)", "tonapi_key (recommended)"],
+                },
+                {
+                    "area": "staking",
+                    "read_only": False,
+                    "writes_on_chain": True,
+                    "requires": ["WALLET_PASSWORD", "tonapi_key (recommended)"],
+                },
+                {
+                    "area": "nft",
+                    "read_only": True,
+                    "writes_on_chain": True,
+                    "requires": ["marketapp_key (for trading)", "WALLET_PASSWORD (for transfers/trades)"],
+                },
+                {
+                    "area": "dns (.ton)",
+                    "read_only": True,
+                    "writes_on_chain": False,
+                    "requires": [],
+                },
+                {
+                    "area": "monitor",
+                    "read_only": True,
+                    "writes_on_chain": False,
+                    "requires": ["sseclient-py (optional)"] ,
+                },
+            ],
+            "known_limitations": [
+                "Upstream APIs may return ambiguous token symbol matches; prefer explicit addresses.",
+                "Some features degrade without TonAPI/Marketapp keys.",
+            ],
+        }
 
     elif args.command == "address":
         if args.addr_cmd == "to-raw":
