@@ -932,14 +932,17 @@ def build_and_send_marketapp_tx(
     payload_b64 = msg.get("payload")
     state_init_b64 = msg.get("stateInit")
 
-    # Декодируем payload
+    if not to_addr:
+        return {"success": False, "error": "Transaction message has no address"}
+
+    # Декодируем payload из API (Cell в base64)
     payload = None
     if payload_b64:
         try:
             payload_bytes = base64.b64decode(payload_b64)
             payload = Cell.one_from_boc(payload_bytes)
-        except:
-            pass
+        except Exception as e:
+            return {"success": False, "error": f"Failed to decode payload: {e}"}
 
     # Строим транзакцию
     query = wallet.create_transfer_message(
