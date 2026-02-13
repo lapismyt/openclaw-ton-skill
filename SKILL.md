@@ -466,7 +466,7 @@ python yield_cmd.py protocols
 
 ### Deposit / Withdraw (Not Supported via API)
 
-⚠️ **swap.coffee yield API is a read-only aggregator.**
+
 
 Deposit and withdraw operations require direct interaction with DEX smart contracts
 (STON.fi, DeDust, TONCO, etc.). Use DEX-specific SDKs or swap.py for liquidity operations.

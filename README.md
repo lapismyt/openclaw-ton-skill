@@ -360,7 +360,7 @@ pytest --cov=scripts --cov-report=term-missing
 |-------------|-----------|-------------------|
 | **swap.coffee Swap** | Route, Build, Status | ✅ Full |
 | **swap.coffee Tokens** | List, Info, Search, Holders, Charts | ✅ Full |
-| **swap.coffee Yield** | Pools, Protocols, Recommendations | ✅ Full (read-only) |
+| **swap.coffee Yield** | Pools, Protocols, Recommendations, Deposit, Withdraw | ✅ Full |
 | **swap.coffee Strategies** | DCA, Limit orders, Strategies wallet, x-verify auth | ✅ Full |
 | **swap.coffee Staking** | Pools, Positions, Stake/Unstake | ✅ Full |
 | **swap.coffee Statistics** | DEX stats, Volume, Top tokens | ✅ Full |
@@ -376,7 +376,6 @@ pytest --cov=scripts --cov-report=term-missing
 
 ## ⚠️ Known Issues
 
-1. **Yield deposit/withdraw not supported** — swap.coffee yield API is read-only; direct DEX interaction required for LP operations
 
 2. **Strategies require wallet deployment** — Before using DCA/limit orders, you must deploy a strategies wallet contract (one-time operation via `strategies.py create-wallet`). The API also requires `pynacl` for x-verify authentication.
 
