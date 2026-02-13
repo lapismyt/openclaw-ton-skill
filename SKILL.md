@@ -3,7 +3,7 @@ name: ton-blockchain
 description: |
   TON blockchain operations: wallet management, TON/jetton transfers, DEX swaps,
   token analytics, yield/DeFi pools, NFT trading, DNS resolution, DCA/limit orders,
-  staking, cashback, referrals, and contests.
+  staking, cashback, referrals, contests, and Telegraph publishing.
   
   Use when user wants to:
   - Create/import/manage TON wallets
@@ -18,6 +18,7 @@ description: |
   - Stake/unstake TON via various protocols
   - Manage profile, cashback, claims, referrals
   - Participate in contests and view leaderboards
+  - Publish markdown to Telegraph (telegra.ph)
 ---
 
 # TON Blockchain Skill
@@ -1022,6 +1023,61 @@ Centralized configuration module (not a CLI tool):
 - Error messages
 
 Used by other scripts for consistent token resolution and formatting.
+
+---
+
+## Telegraph Publishing
+
+Script: `telegraph.py`
+
+Publish markdown content to telegra.ph for rich article hosting.
+
+### Create Account
+
+```bash
+python telegraph.py create-account --short-name "MyBot" --author-name "AI Assistant"
+```
+
+Creates a Telegraph account and saves access token to config.
+
+### Publish Markdown
+
+```bash
+# Basic publish
+python telegraph.py publish --file article.md --title "My Article"
+
+# With author name
+python telegraph.py publish --file doc.md --title "Guide" --author "OpenClaw"
+```
+
+**Features:**
+- Converts markdown to Telegraph node format
+- Supports: headings, paragraphs, bold, italic, code, lists, links, images, blockquotes
+- Tables automatically converted to lists (Telegraph doesn't support tables)
+- Large documents (>64KB) split into multiple parts with navigation links
+
+### Edit Existing Page
+
+```bash
+python telegraph.py edit --url "https://telegra.ph/Article-01-01" --file updated.md
+python telegraph.py edit --url "https://telegra.ph/Article-01-01" --file new.md --title "New Title"
+```
+
+### List Pages
+
+```bash
+python telegraph.py list
+python telegraph.py list --limit 20 --offset 10
+```
+
+### Configuration
+
+Access token stored in `~/.openclaw/ton-skill/config.json` under `telegraph_token`.
+
+```bash
+# View current config
+python utils.py config get telegraph_token
+```
 
 ---
 
