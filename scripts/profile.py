@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """
-OpenClaw TON Skill — DEX Statistics and Contests via swap.coffee API
-
-NOTE: Profile/Cashback/Claim/Referral endpoints were removed as they don't exist
-in the current swap.coffee API. Only verified endpoints are included.
+OpenClaw TON Skill — DEX Statistics, Contests, and Profile via swap.coffee API
 
 Available Features:
 - Statistics: General DEX stats, volumes, top tokens
 - Contests: Active contests, leaderboards
+- Profile: History, settings, TON proof validation
 
 API Base: https://backend.swap.coffee/v1
+
+Profile Endpoints:
+- GET  /v1/profile/history   — Historical transactions
+- POST /v1/profile/proof     — Validate TON proof
+- GET  /v1/profile/settings  — Get user settings
+- POST /v1/profile/settings  — Update user settings
 """
 
 import os
@@ -348,6 +352,221 @@ def get_all_contests(
 
 
 # =============================================================================
+# Profile API
+# =============================================================================
+
+def get_profile_history(
+    wallet_address: str,
+    xverify: Optional[str] = None,
+    page: int = 1,
+    size: int = 50,
+) -> dict:
+    """
+    Get historical transactions for wallet.
+    
+    GET /v1/profile/history
+    
+    Args:
+        wallet_address: User wallet address
+        xverify: x-verify header (TonConnect proof)
+        page: Page number
+        size: Results per page
+    
+    Returns:
+        dict with transaction history
+    """
+    if not is_valid_address(wallet_address):
+        return {"success": False, "error": f"Invalid wallet address: {wallet_address}"}
+    
+    params = {
+        "wallet_address": _make_url_safe(wallet_address),
+        "page": page,
+        "size": min(size, 100),
+    }
+    
+    headers = {"Content-Type": "application/json"}
+    if xverify:
+        headers["x-verify"] = xverify
+    
+    api_key = get_swap_coffee_key()
+    if api_key:
+        headers["X-Api-Key"] = api_key
+    
+    result = api_request(
+        url=f"{SWAP_COFFEE_API}/v1/profile/history",
+        method="GET",
+        headers=headers,
+        params=params,
+    )
+    
+    if result["success"]:
+        data = result["data"]
+        history = data.get("history", data) if isinstance(data, dict) else data
+        return {
+            "success": True,
+            "wallet": wallet_address,
+            "page": page,
+            "history": history,
+            "total_count": data.get("total_count") if isinstance(data, dict) else None,
+        }
+    
+    return {
+        "success": False,
+        "error": result.get("error", "Failed to get profile history"),
+        "status_code": result.get("status_code"),
+    }
+
+
+def validate_ton_proof(
+    address: str,
+    proof: dict,
+) -> dict:
+    """
+    Validate TON proof for wallet ownership.
+    
+    POST /v1/profile/proof
+    
+    Args:
+        address: Wallet address
+        proof: TON proof object
+    
+    Returns:
+        dict with validation result
+    """
+    json_data = {
+        "address": address,
+        "proof": proof,
+    }
+    
+    result = swap_coffee_request(
+        "/profile/proof",
+        method="POST",
+        json_data=json_data,
+    )
+    
+    if result["success"]:
+        return {
+            "success": True,
+            "address": address,
+            "valid": result["data"].get("valid", True) if isinstance(result["data"], dict) else True,
+            "data": result["data"],
+        }
+    
+    return {
+        "success": False,
+        "error": result.get("error", "Failed to validate TON proof"),
+        "status_code": result.get("status_code"),
+    }
+
+
+def get_profile_settings(
+    wallet_address: str,
+    xverify: Optional[str] = None,
+) -> dict:
+    """
+    Get user settings.
+    
+    GET /v1/profile/settings
+    
+    Args:
+        wallet_address: User wallet address
+        xverify: x-verify header (TonConnect proof)
+    
+    Returns:
+        dict with user settings
+    """
+    if not is_valid_address(wallet_address):
+        return {"success": False, "error": f"Invalid wallet address: {wallet_address}"}
+    
+    params = {"wallet_address": _make_url_safe(wallet_address)}
+    
+    headers = {"Content-Type": "application/json"}
+    if xverify:
+        headers["x-verify"] = xverify
+    
+    api_key = get_swap_coffee_key()
+    if api_key:
+        headers["X-Api-Key"] = api_key
+    
+    result = api_request(
+        url=f"{SWAP_COFFEE_API}/v1/profile/settings",
+        method="GET",
+        headers=headers,
+        params=params,
+    )
+    
+    if result["success"]:
+        return {
+            "success": True,
+            "wallet": wallet_address,
+            "settings": result["data"],
+        }
+    
+    return {
+        "success": False,
+        "error": result.get("error", "Failed to get profile settings"),
+        "status_code": result.get("status_code"),
+    }
+
+
+def update_profile_settings(
+    wallet_address: str,
+    settings: dict,
+    xverify: str,
+) -> dict:
+    """
+    Update user settings.
+    
+    POST /v1/profile/settings
+    
+    Args:
+        wallet_address: User wallet address
+        settings: Settings to update
+        xverify: x-verify header (required)
+    
+    Returns:
+        dict with updated settings
+    """
+    if not is_valid_address(wallet_address):
+        return {"success": False, "error": f"Invalid wallet address: {wallet_address}"}
+    
+    json_data = {
+        "wallet_address": wallet_address,
+        **settings,
+    }
+    
+    headers = {
+        "Content-Type": "application/json",
+        "x-verify": xverify,
+    }
+    
+    api_key = get_swap_coffee_key()
+    if api_key:
+        headers["X-Api-Key"] = api_key
+    
+    result = api_request(
+        url=f"{SWAP_COFFEE_API}/v1/profile/settings",
+        method="POST",
+        headers=headers,
+        json_data=json_data,
+    )
+    
+    if result["success"]:
+        return {
+            "success": True,
+            "wallet": wallet_address,
+            "settings": result["data"],
+            "message": "Settings updated successfully",
+        }
+    
+    return {
+        "success": False,
+        "error": result.get("error", "Failed to update profile settings"),
+        "status_code": result.get("status_code"),
+    }
+
+
+# =============================================================================
 # CLI
 # =============================================================================
 
@@ -368,10 +587,15 @@ Examples:
   %(prog)s contest --id contest123
   %(prog)s contest-leaderboard --id contest123 --size 20
   %(prog)s contest-position --id contest123 --wallet UQBvW8...
+  
+  # Profile
+  %(prog)s profile-history --wallet UQBvW8...
+  %(prog)s profile-settings --wallet UQBvW8...
 
 API Categories:
   Statistics:  DEX stats, volumes, top tokens
   Contests:    Active contests, leaderboards
+  Profile:     Transaction history, settings
 """,
     )
     
@@ -406,6 +630,15 @@ API Categories:
     cop_p = subparsers.add_parser("contest-position", help="Get user contest position")
     cop_p.add_argument("--id", "-i", required=True, help="Contest ID")
     cop_p.add_argument("--wallet", "-w", required=True, help="Wallet address")
+    
+    # --- Profile ---
+    ph_p = subparsers.add_parser("profile-history", help="Get transaction history")
+    ph_p.add_argument("--wallet", "-w", required=True, help="Wallet address")
+    ph_p.add_argument("--page", "-p", type=int, default=1, help="Page number")
+    ph_p.add_argument("--size", "-s", type=int, default=50, help="Results per page")
+    
+    ps_p = subparsers.add_parser("profile-settings", help="Get profile settings")
+    ps_p.add_argument("--wallet", "-w", required=True, help="Wallet address")
     
     args = parser.parse_args()
     
@@ -444,6 +677,16 @@ API Categories:
                 contest_id=args.id,
                 wallet_address=args.wallet,
             )
+        
+        # Profile
+        elif args.command == "profile-history":
+            result = get_profile_history(
+                wallet_address=args.wallet,
+                page=args.page,
+                size=args.size,
+            )
+        elif args.command == "profile-settings":
+            result = get_profile_settings(wallet_address=args.wallet)
         
         else:
             result = {"success": False, "error": f"Unknown command: {args.command}"}

@@ -12,15 +12,15 @@ Architecture:
 - Backend executes orders off-chain and initiates transactions on the wallet
 
 API Endpoints:
-- GET  /v1/strategy/wallets        — Check if strategies wallet exists
-- POST /v1/strategy/wallets        — Create strategies wallet (one-time)
-- GET  /v1/strategy/eligibility    — Check if user is eligible
-- GET  /v1/strategy/from-tokens    — Get eligible from-tokens
-- GET  /v1/strategy/to-tokens      — Get eligible to-tokens
-- POST /v1/strategy/orders         — Create order (returns tx to sign)
-- GET  /v1/strategy/orders         — List orders
-- GET  /v1/strategy/orders/{id}    — Get order details
-- DELETE /v1/strategy/orders/{id}  — Cancel order (returns tx to sign)
+- GET  /v1/strategies/wallets                    — Check if strategies wallet exists
+- POST /v1/strategies/wallets                    — Create strategies wallet (one-time)
+- GET  /v1/strategies/eligibility                — Check if user is eligible
+- GET  /v1/strategies/eligibility/from-tokens    — Get eligible from-tokens
+- GET  /v1/strategies/eligibility/to-tokens      — Get eligible to-tokens
+- POST /v1/strategies/orders                     — Create order (returns tx to sign)
+- GET  /v1/strategies/orders                     — List orders
+- GET  /v1/strategies/orders/{id}                — Get order details
+- DELETE /v1/strategies/orders/{id}              — Cancel order (returns tx to sign)
 
 Authentication:
 Most endpoints require `x-verify` header containing a TonConnect proof signature.
@@ -77,7 +77,7 @@ except ImportError:
 # =============================================================================
 
 SWAP_COFFEE_API = "https://backend.swap.coffee"
-STRATEGIES_API_V1 = f"{SWAP_COFFEE_API}/v1/strategy"
+STRATEGIES_API_V1 = f"{SWAP_COFFEE_API}/v1/strategies"
 
 # Order types
 ORDER_TYPES = ["limit", "dca"]
@@ -519,7 +519,7 @@ def get_from_tokens(order_type: str = "limit") -> dict:
     if order_type not in ORDER_TYPES:
         return {"success": False, "error": f"Invalid type. Must be: {ORDER_TYPES}"}
     
-    result = strategy_request("/from-tokens", params={"type": order_type})
+    result = strategy_request("/eligibility/from-tokens", params={"type": order_type})
     
     if not result["success"]:
         return {
@@ -555,7 +555,7 @@ def get_to_tokens(order_type: str = "limit", from_token: str = "native") -> dict
         return {"success": False, "error": f"Invalid type. Must be: {ORDER_TYPES}"}
     
     params = {"type": order_type, "from_token": from_token}
-    result = strategy_request("/to-tokens", params=params)
+    result = strategy_request("/eligibility/to-tokens", params=params)
     
     if not result["success"]:
         return {
