@@ -106,9 +106,33 @@ python3 swap.py quote --from TON --to INVALID_TOKEN --amount 10 --wallet ADDRESS
 
 ---
 
+### BUG-009: is_ton_domain() слишком пермиссивная
+**Файл:** `dns.py`  
+**Описание:** Функция `is_ton_domain()` считала "skill-test" доменом, потому что допускала короткие имена без .ton суффикса.  
+**Воспроизведение:**
+```bash
+python3 scripts/nft.py list --wallet skill-test
+# Выводит: "Cannot resolve wallet: skill-test" — потому что пыталась резолвить как домен
+```
+**Причина:** Строка `if all(c.isalnum() or c in "-_" for c in clean_lower) and 0 < len(clean_lower) <= 30: return True`  
+**Исправление:** Удалена "угадывалка" коротких доменов. Теперь только строки с явным ".ton" суффиксом считаются доменами.  
+**Статус:** ✅ ИСПРАВЛЕНО
+
+---
+
+### BUG-010: execute_swap() не принимает referral параметры
+**Файл:** `swap.py`  
+**Описание:** CLI передавал `referral_address` и `referral_fee_percent`, но функция `execute_swap()` не принимала эти параметры.  
+**Исправление:** Добавлены опциональные параметры в сигнатуру функции.  
+**Статус:** ✅ ИСПРАВЛЕНО
+
+---
+
 ## Changelog
 
 **2026-02-13:**
 - Создан документ BUGS.md
 - Исправлены баги BUG-001, BUG-002, BUG-003, BUG-004, BUG-006, BUG-007
 - Исправлен BUG-008: Неправильный адрес токена STON (был недействительный адрес)
+- Исправлен BUG-009: is_ton_domain() слишком пермиссивная (мешала резолву лейблов кошельков)
+- Исправлен BUG-010: execute_swap() не принимает referral параметры

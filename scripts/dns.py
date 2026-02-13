@@ -137,7 +137,12 @@ def get_domain_info(domain: str) -> dict:
 
 
 def is_ton_domain(address_or_domain: str) -> bool:
-    """Проверяет, является ли строка .ton доменом."""
+    """
+    Проверяет, является ли строка .ton доменом.
+    
+    ВАЖНО: Возвращает True ТОЛЬКО для строк, явно заканчивающихся на .ton
+    Не делает предположений о коротких именах — они могут быть лейблами кошельков.
+    """
     clean = address_or_domain.strip()
 
     # Если это валидный TON адрес — точно не домен
@@ -150,12 +155,9 @@ def is_ton_domain(address_or_domain: str) -> bool:
 
     clean_lower = clean.lower()
 
-    # Явно .ton в конце
+    # Только явное окончание .ton считается доменом
+    # Короткие имена типа "skill-test" НЕ являются доменами — это могут быть лейблы кошельков
     if clean_lower.endswith(".ton"):
-        return True
-
-    # Может быть доменом без .ton (короткое имя)
-    if all(c.isalnum() or c in "-_" for c in clean_lower) and 0 < len(clean_lower) <= 30:
         return True
 
     return False

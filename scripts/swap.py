@@ -498,6 +498,9 @@ def execute_swap(
     slippage: float = 0.5,
     password: str = None,
     confirm: bool = False,
+    referral_address: Optional[str] = None,
+    referral_fee_percent: float = 0.0,
+    wait_for_completion: bool = False,
 ) -> dict:
     """
     Выполняет свап токенов.
@@ -510,6 +513,9 @@ def execute_swap(
         slippage: Проскальзывание в %
         password: Пароль
         confirm: Подтвердить выполнение
+        referral_address: Адрес реферала для комиссии
+        referral_fee_percent: Процент реферальной комиссии (0-1%)
+        wait_for_completion: Ожидать завершения транзакции
 
     Returns:
         dict с результатом (эмуляция или выполнение)

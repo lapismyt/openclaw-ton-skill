@@ -92,12 +92,36 @@ def create_wallet_instance(wallet_data: dict):
 # =============================================================================
 
 
+def get_account_status(address: str) -> str:
+    """
+    Получает статус аккаунта (active, uninit, nonexist).
+    
+    Args:
+        address: Адрес аккаунта
+        
+    Returns:
+        Статус: "active", "uninit", "nonexist", или "unknown"
+    """
+    addr = _make_url_safe(address)
+    result = tonapi_request(f"/accounts/{addr}")
+    
+    if result["success"]:
+        return result["data"].get("status", "unknown")
+    
+    # Если ошибка 404 - аккаунт не существует
+    if result.get("status_code") == 404:
+        return "nonexist"
+    
+    return "unknown"
+
+
 def build_ton_transfer(
     wallet,
     to_address: str,
     amount_nano: int,
     comment: Optional[str] = None,
     seqno: int = 0,
+    bounce: bool = True,
 ) -> bytes:
     """
     Строит транзакцию перевода TON.
@@ -108,10 +132,13 @@ def build_ton_transfer(
         amount_nano: Сумма в нано-TON
         comment: Комментарий к переводу
         seqno: Sequence number кошелька
+        bounce: Bounce флаг (False для неинициализированных кошельков)
 
     Returns:
         bytes BOC (подписанная транзакция)
     """
+    from tonsdk.utils import Address
+    
     # Создаём payload с комментарием если есть
     payload = None
     if comment:
@@ -121,6 +148,16 @@ def build_ton_transfer(
         payload = Cell()
         payload.bits.write_uint(0, 32)  # opcode для комментария
         payload.bits.write_string(comment)
+
+    # Конвертируем адрес с правильным bounce флагом
+    # Для неинициализированных кошельков bounce должен быть False
+    recipient_addr = Address(to_address)
+    
+    # Если bounce=False, конвертируем в non-bounceable формат
+    if not bounce:
+        # Получаем raw адрес и конвертируем в non-bounceable friendly
+        raw_addr = f"{recipient_addr.wc}:{recipient_addr.hash_part.hex()}"
+        to_address = raw_to_friendly(raw_addr, bounceable=False)
 
     # Создаём transfer
     query = wallet.create_transfer_message(
@@ -434,7 +471,12 @@ def transfer_ton(
     # 3. Получаем seqno
     seqno = get_seqno(sender_address)
 
-    # 4. Строим транзакцию
+    # 4. Проверяем статус получателя для определения bounce
+    recipient_status = get_account_status(recipient)
+    # Для неинициализированных или несуществующих аккаунтов используем bounce=False
+    bounce = recipient_status not in ("uninit", "nonexist")
+
+    # 5. Строим транзакцию
     amount_nano = int(amount_ton * 1e9)
     boc = build_ton_transfer(
         wallet=wallet,
@@ -442,10 +484,11 @@ def transfer_ton(
         amount_nano=amount_nano,
         comment=comment,
         seqno=seqno,
+        bounce=bounce,
     )
     boc_b64 = base64.b64encode(boc).decode("ascii")
 
-    # 5. Эмулируем
+    # 6. Эмулируем
     emulation = emulate_transfer(boc_b64, sender_address)
 
     result = {
@@ -457,6 +500,8 @@ def transfer_ton(
         "amount_ton": amount_ton,
         "amount_nano": amount_nano,
         "comment": comment,
+        "recipient_status": recipient_status,
+        "bounce": bounce,
         "emulation": emulation,
     }
 
@@ -468,7 +513,7 @@ def transfer_ton(
     result["fee_ton"] = emulation["fee_ton"]
     result["total_cost_ton"] = amount_ton + emulation["fee_ton"]
 
-    # 6. Если --confirm — отправляем
+    # 7. Если --confirm — отправляем
     if confirm:
         send_result = send_transaction(boc_b64)
         result["sent"] = send_result["success"]
