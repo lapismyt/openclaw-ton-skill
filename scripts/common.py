@@ -27,7 +27,7 @@ KNOWN_TOKENS = {
     
     # Popular tokens
     "NOT": "EQAvlWFDxGF2lXm67y4yzC17wYKD9A0guwPkMs1gOsM__NOT",
-    "STON": "EQA2kCVNwVsil2EM2mB0SkXytxCqWFOx9ySUfP2qVLZMSgHD",
+    "STON": "EQA2kCVNwVsil2EM2mB0SkXytxCqQjS4mttjDpnXmwG9T6bO",
     "SCALE": "EQBlqsm144Dq6SjbPI4jjZvA1hqTIP3CvHovbIfW_t-SCALE",
     "DUST": "EQAhE5C_M4k6h_MF-qpBiJd4ILIpPqiVvF0TqJYRX5sSqe5L",
     "GRAM": "EQC47093oX5Xhb0xuk2lCr2RhS8rj-vul61u4W2UH5ORmG_O",
@@ -39,7 +39,8 @@ KNOWN_TOKENS = {
     # DeFi tokens
     "STONFI": "EQDNhy-nxYFgUqzfUzl3fy4uAPTgG51IkA7-0A-MR9bJSZLt",
     "DEDUST": "EQBlqsm144Dq6SjbPI4jjZvA1hqTIP3CvHovbIfW_t-SCALE",
-    "MEGATON": "EQA2kCVNwVsil2EM2mB0SkXytxCqWFOx9ySUfP2qVLZMSgHD",
+    # Note: Megaton Finance is a DEX, not a token. Removed incorrect placeholder.
+    # If MEGA token exists, add correct address here.
     
     # Wrapped
     "WTON": "EQCajaUU1XXSAjTD-xOV7pE49fGtg4q8kF3ELCOJtGvQFQ2C",
