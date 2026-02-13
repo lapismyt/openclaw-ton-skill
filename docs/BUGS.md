@@ -198,6 +198,37 @@ python3 profile.py contests-active
 
 ---
 
+---
+
+### BUG-016: Strategies API endpoints don't exist
+**Файл:** `strategies.py`  
+**Описание:** Все эндпоинты `/v1/strategy/*` возвращают 404:
+- GET/POST `/v1/strategy/wallets` - 404
+- GET `/v1/strategy/from-tokens` - 404
+- GET `/v1/strategy/to-tokens` - 404
+- GET `/v1/strategy/eligibility` - 404
+- GET/POST `/v1/strategy/orders` - 404
+
+**Воспроизведение:**
+```bash
+python3 strategies.py -p test123 create-wallet --wallet skill-test --confirm
+# {"success": false, "error": "Not Found"}
+
+curl -s "https://backend.swap.coffee/v1/strategy/wallets?wallet_address=EQ..."
+# Empty 404 response
+```
+**Возможные причины:**
+1. API еще в разработке/бета
+2. Неправильная версия API (возможно /v2/)
+3. Требуется специальный API ключ
+4. Эндпоинты на другом поддомене
+
+**Примечание:** x-verify генерация работает корректно (нет ошибок криптографии).  
+**Влияние:** Невозможно использовать функции DCA/Limit orders.  
+**Статус:** 🔴 ОТКРЫТ — требуется уточнение у swap.coffee
+
+---
+
 ## Changelog
 
 **2026-02-13:**
